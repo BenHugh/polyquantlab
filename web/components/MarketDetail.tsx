@@ -1,11 +1,27 @@
 "use client";
 
 /**
- * Read-only market inspector. No charting library — we hand-roll an
- * inline SVG sparkline for the price history so the dashboard stays
- * dep-light. (Phase E2 will swap to Recharts for the backtest results
- * page; we'll lift the chart there.)
+ * Single-market inspector with three differentiating features that
+ * Polymarket.com doesn't offer:
+ *
+ *   1. Dual-axis chart — Polymarket Up share overlaid on the Binance
+ *      spot price for the underlying, so you can see the causal link
+ *      between the market and the asset (the whole reason these markets
+ *      exist).
+ *
+ *   2. Time scrubber — drag a slider to replay the orderbook at any
+ *      historical second. Leverages our 8 snap/sec/market depth. This is
+ *      our biggest single differentiator vs the free Polymarket UI.
+ *
+ *   3. Friendlier empty states for fields that are mathematically zero
+ *      after resolution (liquidity) or unavailable because the market
+ *      pre-dates our data window (underlying-at-start).
+ *
+ * No charting library: hand-rolled SVG keeps the bundle tiny and the
+ * dual-axis layout fully under our control.
  */
+
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export interface MarketMeta {
   market_id: string;
@@ -63,20 +79,75 @@ export default function MarketDetail({
   book: OrderbookSnapshot | null;
   series: TimeseriesPayload | null;
 }) {
+  const points = series?.snapshots ?? [];
+  // Scrubber index: -1 means "use the initial latest book passed in by
+  // the server"; 0..N-1 means "fetch the orderbook at points[idx].time".
+  const [scrubIdx, setScrubIdx] = useState<number>(-1);
+  const [scrubbedBook, setScrubbedBook] = useState<OrderbookSnapshot | null>(null);
+  const [scrubbing, setScrubbing] = useState(false);
+
+  // Debounced fetch — don't hammer the API on every pixel of drag.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (scrubIdx < 0) {
+      setScrubbedBook(null);
+      return;
+    }
+    const targetTs = points[scrubIdx]?.time;
+    if (!targetTs) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setScrubbing(true);
+      try {
+        const url = `/api/markets/${encodeURIComponent(meta.market_id)}/orderbook?at=${encodeURIComponent(targetTs)}`;
+        const res = await fetch(url, { cache: "no-store" });
+        if (res.ok) {
+          setScrubbedBook(await res.json());
+        }
+      } catch {
+        /* leave previous book in place */
+      } finally {
+        setScrubbing(false);
+      }
+    }, 200);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [scrubIdx, points, meta.market_id]);
+
+  // Which book do we show? Scrubbed if active, otherwise the initial latest.
+  const activeBook = scrubIdx >= 0 ? scrubbedBook ?? book : book;
+  const activeTs = scrubIdx >= 0 ? points[scrubIdx]?.time : book?.time;
+
   return (
     <div className="space-y-6">
       <MetadataCard meta={meta} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <PriceSparkline meta={meta} series={series} />
-        <OrderbookCard meta={meta} book={book} />
+        <DualAxisChart
+          meta={meta}
+          points={points}
+          highlightIdx={scrubIdx}
+        />
+        <OrderbookCard
+          meta={meta}
+          book={activeBook}
+          activeTs={activeTs}
+          loading={scrubbing}
+        />
       </div>
+
+      <TimeScrubber
+        points={points}
+        scrubIdx={scrubIdx}
+        onChange={setScrubIdx}
+      />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Metadata card
+// Metadata card — with friendlier empty-state copy
 // ---------------------------------------------------------------------------
 
 function MetadataCard({ meta }: { meta: MarketMeta }) {
@@ -85,6 +156,29 @@ function MetadataCard({ meta }: { meta: MarketMeta }) {
   const priceEndKey = `${ticker}_price_end`;
   const priceStart = meta[priceStartKey] as number | null | undefined;
   const priceEnd = meta[priceEndKey] as number | null | undefined;
+
+  // Determine WHY a value might be missing so we can show useful copy
+  // instead of a bare "—".
+  const isResolved = !!meta.resolved_at;
+  const liquidityLabel =
+    meta.final_liquidity == null
+      ? "—"
+      : meta.final_liquidity === 0 && isResolved
+        ? "≈ 0 (post-resolution)"
+        : formatNumber(meta.final_liquidity);
+
+  const priceStartLabel =
+    priceStart == null ? (
+      <span className="opacity-60 text-sm">before data window</span>
+    ) : (
+      `$${formatPx(priceStart)}`
+    );
+  const priceEndLabel =
+    priceEnd == null ? (
+      <span className="opacity-60 text-sm">no spot tick near resolution</span>
+    ) : (
+      `$${formatPx(priceEnd)}`
+    );
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -95,22 +189,28 @@ function MetadataCard({ meta }: { meta: MarketMeta }) {
           meta.winner === "Up"
             ? "Up 📈"
             : meta.winner === "Down"
-            ? "Down 📉"
-            : "—"
+              ? "Down 📉"
+              : "—"
         }
-        accent={meta.winner === "Up" ? "success" : meta.winner === "Down" ? "error" : undefined}
+        accent={
+          meta.winner === "Up"
+            ? "success"
+            : meta.winner === "Down"
+              ? "error"
+              : undefined
+        }
       />
       <Stat label="Final volume" value={formatMoney(meta.final_volume)} />
-      <Stat label="Final liquidity" value={formatNumber(meta.final_liquidity)} />
+      <Stat label="Final liquidity" value={liquidityLabel} />
       <Stat label="Start" value={formatDate(meta.start_time)} />
       <Stat label="End" value={formatDate(meta.end_time)} />
       <Stat
         label={`${meta.ticker || "BTC"} @ start`}
-        value={priceStart != null ? `$${formatPx(priceStart)}` : "—"}
+        value={priceStartLabel}
       />
       <Stat
         label={`${meta.ticker || "BTC"} @ end`}
-        value={priceEnd != null ? `$${formatPx(priceEnd)}` : "—"}
+        value={priceEndLabel}
       />
     </div>
   );
@@ -122,15 +222,15 @@ function Stat({
   accent,
 }: {
   label: string;
-  value: string;
+  value: React.ReactNode;
   accent?: "success" | "error";
 }) {
   const color =
     accent === "success"
       ? "text-success"
       : accent === "error"
-      ? "text-error"
-      : "";
+        ? "text-error"
+        : "";
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-3">
       <div className="text-xs uppercase tracking-wide opacity-60">{label}</div>
@@ -140,129 +240,292 @@ function Stat({
 }
 
 // ---------------------------------------------------------------------------
-// Price sparkline (inline SVG; no chart lib)
+// Dual-axis chart: Polymarket Up share (0-100%) + underlying spot price
 // ---------------------------------------------------------------------------
 
-function PriceSparkline({
+function DualAxisChart({
   meta,
-  series,
+  points,
+  highlightIdx,
 }: {
   meta: MarketMeta;
-  series: TimeseriesPayload | null;
+  points: TimeseriesPoint[];
+  highlightIdx: number;
 }) {
-  const points = series?.snapshots ?? [];
-  const upSeries = points
-    .map((p) => p.price_up)
-    .filter((v): v is number => typeof v === "number");
-
   const ticker = (meta.ticker || "").toLowerCase();
   const underlyingKey = `${ticker}_price`;
-  const underlyingSeries = points
-    .map((p) => p[underlyingKey] as number | null)
-    .filter((v): v is number => typeof v === "number");
+
+  // Collect aligned (Up share, underlying) pairs. Drop points where Up
+  // is null (rare); leave underlying null gaps to be skipped in the line.
+  const data = useMemo(() => {
+    return points.map((p) => ({
+      time: p.time,
+      up: p.price_up,
+      under: p[underlyingKey] as number | null,
+    }));
+  }, [points, underlyingKey]);
+
+  const upValues = data.map((d) => d.up).filter((v): v is number => v != null);
+  const underValues = data
+    .map((d) => d.under)
+    .filter((v): v is number => v != null);
+
+  if (data.length < 2 || upValues.length < 2) {
+    return (
+      <div className="rounded-lg border border-base-300 bg-base-100 p-4 text-sm opacity-60 text-center py-8">
+        Not enough timeseries data to draw a chart yet.
+      </div>
+    );
+  }
+
+  // Chart dimensions
+  const W = 700;
+  const H = 220;
+  const PAD_L = 44; // left axis label space
+  const PAD_R = 56; // right axis label space
+  const PAD_T = 14;
+  const PAD_B = 18;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+
+  // Scales
+  const upLo = 0;
+  const upHi = 1;
+  const xStep = plotW / (data.length - 1);
+
+  let underLo = 0;
+  let underHi = 1;
+  if (underValues.length >= 2) {
+    underLo = Math.min(...underValues);
+    underHi = Math.max(...underValues);
+    if (underHi === underLo) underHi = underLo + 1; // avoid div-by-zero
+    // Pad ~3% on each side so the line isn't glued to the edges
+    const pad = (underHi - underLo) * 0.03;
+    underLo -= pad;
+    underHi += pad;
+  }
+
+  const xAt = (i: number) => PAD_L + i * xStep;
+  const yUp = (v: number) => PAD_T + (1 - (v - upLo) / (upHi - upLo)) * plotH;
+  const yUnder = (v: number) =>
+    PAD_T + (1 - (v - underLo) / (underHi - underLo)) * plotH;
+
+  // Build path strings. Skip nulls by breaking the line ("M" again).
+  const buildPath = (
+    values: (number | null)[],
+    yFn: (v: number) => number
+  ): string => {
+    let path = "";
+    let pen = "M";
+    values.forEach((v, i) => {
+      if (v == null) {
+        pen = "M";
+        return;
+      }
+      path += `${pen}${xAt(i).toFixed(1)},${yFn(v).toFixed(1)} `;
+      pen = "L";
+    });
+    return path.trim();
+  };
+
+  const upPath = buildPath(
+    data.map((d) => d.up),
+    yUp
+  );
+  const underPath = buildPath(
+    data.map((d) => d.under),
+    yUnder
+  );
+
+  const upColor = "oklch(60% 0.2 250)";   // blueish — left axis
+  const underColor = "oklch(70% 0.18 50)"; // orangeish — right axis
+
+  // Highlight vertical line (driven by the time scrubber)
+  const highlightX = highlightIdx >= 0 ? xAt(highlightIdx) : null;
+  const highlightUp =
+    highlightIdx >= 0 && data[highlightIdx]?.up != null
+      ? data[highlightIdx].up
+      : null;
+  const highlightUnder =
+    highlightIdx >= 0 && data[highlightIdx]?.under != null
+      ? data[highlightIdx].under
+      : null;
+
+  const startUp = data.find((d) => d.up != null)?.up ?? null;
+  const endUp = [...data].reverse().find((d) => d.up != null)?.up ?? null;
 
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Up-side price over time</h3>
-        <span className="text-xs opacity-60">{points.length} snapshots</span>
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <h3 className="font-semibold">Up share vs {meta.ticker || "Underlying"} spot</h3>
+        <div className="flex gap-3 text-xs">
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block w-3 h-0.5"
+              style={{ background: upColor }}
+            />
+            Up share
+          </span>
+          {underValues.length >= 2 && (
+            <span className="flex items-center gap-1">
+              <span
+                className="inline-block w-3 h-0.5"
+                style={{ background: underColor }}
+              />
+              {meta.ticker} spot
+            </span>
+          )}
+        </div>
       </div>
 
-      {upSeries.length < 2 ? (
-        <p className="text-sm opacity-60 py-8 text-center">
-          Not enough data yet.
-        </p>
-      ) : (
-        <>
-          <Sparkline values={upSeries} domain={[0, 1]} color="oklch(60% 0.2 250)" />
-          <p className="text-xs opacity-70">
-            Up share: {(upSeries[0] * 100).toFixed(1)}% →{" "}
-            {(upSeries[upSeries.length - 1] * 100).toFixed(1)}%
-          </p>
-        </>
-      )}
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full h-56"
+        preserveAspectRatio="none"
+      >
+        {/* Grid: 4 horizontal lines */}
+        {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
+          const y = PAD_T + frac * plotH;
+          return (
+            <line
+              key={frac}
+              x1={PAD_L}
+              x2={W - PAD_R}
+              y1={y}
+              y2={y}
+              stroke="currentColor"
+              strokeOpacity={0.08}
+            />
+          );
+        })}
 
-      {underlyingSeries.length >= 2 && (
-        <>
-          <div className="border-t border-base-300 pt-3" />
-          <div className="flex items-center justify-between">
-            <h4 className="font-semibold text-sm">
-              Underlying spot ({meta.ticker})
-            </h4>
-            <span className="text-xs opacity-60 tabular-nums">
-              ${formatPx(underlyingSeries[0])} → $
-              {formatPx(underlyingSeries[underlyingSeries.length - 1])}
-            </span>
-          </div>
-          <Sparkline
-            values={underlyingSeries}
-            color="oklch(70% 0.18 50)"
+        {/* Left axis ticks (Up share %) */}
+        {[0, 0.25, 0.5, 0.75, 1].map((frac) => (
+          <text
+            key={frac}
+            x={PAD_L - 6}
+            y={PAD_T + (1 - frac) * plotH + 3}
+            textAnchor="end"
+            fontSize="10"
+            fill={upColor}
+          >
+            {Math.round(frac * 100)}%
+          </text>
+        ))}
+
+        {/* Right axis ticks (underlying spot) */}
+        {underValues.length >= 2 &&
+          [0, 0.5, 1].map((frac) => {
+            const v = underLo + frac * (underHi - underLo);
+            return (
+              <text
+                key={frac}
+                x={W - PAD_R + 6}
+                y={PAD_T + (1 - frac) * plotH + 3}
+                textAnchor="start"
+                fontSize="10"
+                fill={underColor}
+              >
+                ${formatPx(v)}
+              </text>
+            );
+          })}
+
+        {/* Lines */}
+        <path d={upPath} fill="none" stroke={upColor} strokeWidth={1.5} />
+        {underValues.length >= 2 && (
+          <path
+            d={underPath}
+            fill="none"
+            stroke={underColor}
+            strokeWidth={1.5}
           />
-        </>
-      )}
+        )}
+
+        {/* Scrubber highlight: vertical line + dots on both series */}
+        {highlightX != null && (
+          <>
+            <line
+              x1={highlightX}
+              x2={highlightX}
+              y1={PAD_T}
+              y2={H - PAD_B}
+              stroke="currentColor"
+              strokeOpacity={0.4}
+              strokeDasharray="3 3"
+            />
+            {highlightUp != null && (
+              <circle
+                cx={highlightX}
+                cy={yUp(highlightUp)}
+                r={3}
+                fill={upColor}
+              />
+            )}
+            {highlightUnder != null && (
+              <circle
+                cx={highlightX}
+                cy={yUnder(highlightUnder)}
+                r={3}
+                fill={underColor}
+              />
+            )}
+          </>
+        )}
+      </svg>
+
+      <p className="text-xs opacity-70">
+        Up: {startUp != null ? (startUp * 100).toFixed(1) : "?"}% →{" "}
+        {endUp != null ? (endUp * 100).toFixed(1) : "?"}%
+        {underValues.length >= 2 && (
+          <>
+            {" "}
+            · {meta.ticker} ${formatPx(underValues[0])} → $
+            {formatPx(underValues[underValues.length - 1])}
+          </>
+        )}
+        {highlightIdx >= 0 && data[highlightIdx] && (
+          <span className="ml-2 opacity-80">
+            (scrubbed: {formatTime(data[highlightIdx].time)})
+          </span>
+        )}
+      </p>
     </div>
   );
 }
 
-function Sparkline({
-  values,
-  domain,
-  color = "currentColor",
-  height = 60,
-}: {
-  values: number[];
-  /** Force a y-axis domain; if omitted, autoscale to min/max. */
-  domain?: [number, number];
-  color?: string;
-  height?: number;
-}) {
-  if (values.length < 2) return null;
-  const width = 600;
-  const [lo, hi] = domain ?? [Math.min(...values), Math.max(...values)];
-  const range = Math.max(hi - lo, 1e-9);
-  const step = width / (values.length - 1);
-  const path = values
-    .map((v, i) => {
-      const x = i * step;
-      const y = height - ((v - lo) / range) * height;
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      className="w-full h-16"
-      preserveAspectRatio="none"
-    >
-      <path d={path} fill="none" stroke={color} strokeWidth={1.5} />
-    </svg>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Orderbook card
+// Orderbook card — now driven by the active timestamp
 // ---------------------------------------------------------------------------
 
 function OrderbookCard({
   meta,
   book,
+  activeTs,
+  loading,
 }: {
   meta: MarketMeta;
   book: OrderbookSnapshot | null;
+  activeTs?: string | null;
+  loading?: boolean;
 }) {
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Latest orderbook</h3>
-        {book?.time && (
-          <span className="text-xs opacity-60">{formatDate(book.time)}</span>
+        <h3 className="font-semibold">
+          Orderbook
+          {loading && (
+            <span className="ml-2 loading loading-spinner loading-xs" />
+          )}
+        </h3>
+        {activeTs && (
+          <span className="text-xs opacity-60">{formatDate(activeTs)}</span>
         )}
       </div>
 
       {!book ? (
         <p className="text-sm opacity-60 py-8 text-center">
-          No snapshots stored yet.
+          No snapshot at this timestamp.
         </p>
       ) : (
         <>
@@ -289,11 +552,36 @@ function OrderbookCard({
           </div>
 
           <div className="grid grid-cols-2 gap-3 text-xs">
-            <BookSide title="Up · Bids" levels={book.orderbook_up.bids} accent="success" />
-            <BookSide title="Up · Asks" levels={book.orderbook_up.asks} accent="error" />
-            <BookSide title="Down · Bids" levels={book.orderbook_down.bids} accent="success" />
-            <BookSide title="Down · Asks" levels={book.orderbook_down.asks} accent="error" />
+            <BookSide
+              title="Up · Bids"
+              levels={book.orderbook_up.bids}
+              accent="success"
+            />
+            <BookSide
+              title="Up · Asks"
+              levels={book.orderbook_up.asks}
+              accent="error"
+            />
+            <BookSide
+              title="Down · Bids"
+              levels={book.orderbook_down.bids}
+              accent="success"
+            />
+            <BookSide
+              title="Down · Asks"
+              levels={book.orderbook_down.asks}
+              accent="error"
+            />
           </div>
+
+          {(book.orderbook_up.asks.length === 0 ||
+            book.orderbook_down.bids.length === 0) && (
+            <p className="text-xs opacity-60 italic">
+              Empty sides are normal for binary markets — liquidity tends to
+              concentrate on Up·Bids + Down·Asks (or vice versa). The two
+              sides are mathematically linked: Up_bid + Down_ask ≈ $1.
+            </p>
+          )}
         </>
       )}
     </div>
@@ -347,6 +635,65 @@ function BookSide({
 }
 
 // ---------------------------------------------------------------------------
+// Time scrubber: drag a slider through history → drives orderbook fetch
+// ---------------------------------------------------------------------------
+
+function TimeScrubber({
+  points,
+  scrubIdx,
+  onChange,
+}: {
+  points: TimeseriesPoint[];
+  scrubIdx: number;
+  onChange: (i: number) => void;
+}) {
+  if (points.length < 2) return null;
+
+  const latestIdx = points.length - 1;
+  const currentIdx = scrubIdx < 0 ? latestIdx : scrubIdx;
+  const currentTs = points[currentIdx]?.time;
+  const isLatest = scrubIdx < 0;
+
+  return (
+    <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h3 className="font-semibold">Time scrubber</h3>
+          <p className="text-xs opacity-60 mt-0.5">
+            Drag to replay the orderbook at any historical second.
+          </p>
+        </div>
+        <button
+          className="btn btn-xs btn-outline"
+          disabled={isLatest}
+          onClick={() => onChange(-1)}
+        >
+          Jump to latest
+        </button>
+      </div>
+
+      <input
+        type="range"
+        min={0}
+        max={latestIdx}
+        value={currentIdx}
+        onChange={(e) => onChange(parseInt(e.target.value, 10))}
+        className="range range-primary range-xs w-full"
+      />
+
+      <div className="flex justify-between text-xs opacity-70">
+        <span>{formatDate(points[0]?.time)}</span>
+        <span className="font-mono">
+          {isLatest ? "LATEST · " : "AT · "}
+          {formatDate(currentTs)}
+        </span>
+        <span>{formatDate(points[latestIdx]?.time)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Formatters
 // ---------------------------------------------------------------------------
 
@@ -360,6 +707,17 @@ function formatDate(iso?: string | null): string {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+  });
+}
+
+function formatTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
   });
 }
 
