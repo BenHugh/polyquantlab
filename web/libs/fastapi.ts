@@ -40,10 +40,39 @@ async function internalFetch(path: string, init: RequestInit = {}): Promise<Resp
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Internal-Secret": INTERNAL_API_SECRET,
+    // Force a fresh TCP socket for every internal request. Otherwise
+    // Node's `undici` pool reuses sockets that uvicorn may have already
+    // closed on its end (default keep-alive timeout ~5s), giving us
+    // ECONNRESET / UND_ERR_SOCKET "other side closed" mid-response.
+    // Internal calls are low-volume + LAN-local, so the perf cost is
+    // negligible.
+    Connection: "close",
     ...((init.headers as Record<string, string>) || {}),
   };
-  // We never want cached internal calls.
-  return fetch(url, { ...init, headers, cache: "no-store" });
+
+  // Retry once on transient socket errors. undici sometimes hands back a
+  // pooled socket that the server has just closed; the retry gets a
+  // fresh connection. Anything other than a socket error is re-thrown.
+  const SOCKET_ERROR_CODES = new Set([
+    "UND_ERR_SOCKET",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "EPIPE",
+  ]);
+  const doFetch = () => fetch(url, { ...init, headers, cache: "no-store" });
+
+  try {
+    return await doFetch();
+  } catch (err: unknown) {
+    const code = (err as { cause?: { code?: string }; code?: string })?.cause?.code
+      || (err as { code?: string })?.code;
+    if (code && SOCKET_ERROR_CODES.has(code)) {
+      // Small backoff to let any half-open state settle.
+      await new Promise((r) => setTimeout(r, 50));
+      return doFetch();
+    }
+    throw err;
+  }
 }
 
 /**

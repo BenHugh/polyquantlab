@@ -86,7 +86,10 @@ export default function MarketDetail({
   const [scrubbedBook, setScrubbedBook] = useState<OrderbookSnapshot | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
 
-  // Debounced fetch — don't hammer the API on every pixel of drag.
+  // Debounced fetch — wait for the user to actually pause/release the
+  // slider before hitting the API. 500ms is long enough to absorb a
+  // full drag motion (most drags are <300ms) but short enough that a
+  // single click on the track feels responsive.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (scrubIdx < 0) {
@@ -114,7 +117,7 @@ export default function MarketDetail({
       } finally {
         setScrubbing(false);
       }
-    }, 200);
+    }, 500);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
