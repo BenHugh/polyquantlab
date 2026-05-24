@@ -102,7 +102,12 @@ export default function MarketDetail({
         const url = `/api/markets/${encodeURIComponent(meta.market_id)}/orderbook?at=${encodeURIComponent(targetTs)}`;
         const res = await fetch(url, { cache: "no-store" });
         if (res.ok) {
-          setScrubbedBook(await res.json());
+          const body = await res.json();
+          // Only update if the response actually looks like a book — guards
+          // against the proxy ever returning an error JSON with a 200.
+          if (body && body.orderbook_up && body.orderbook_down) {
+            setScrubbedBook(body);
+          }
         }
       } catch {
         /* leave previous book in place */
@@ -528,61 +533,58 @@ function OrderbookCard({
           No snapshot at this timestamp.
         </p>
       ) : (
-        <>
-          <div className="text-xs opacity-70">
-            Mid Up:{" "}
-            <span className="font-semibold">
-              {book.mid_yes != null ? (book.mid_yes * 100).toFixed(2) + "%" : "—"}
-            </span>{" "}
-            · Spread:{" "}
-            <span className="font-semibold">
-              {book.spread_yes != null
-                ? (book.spread_yes * 100).toFixed(2) + "%"
-                : "—"}
-            </span>
-            {book.underlying_price != null && (
-              <>
-                {" "}
-                · {meta.ticker || "Underlying"}:{" "}
+        (() => {
+          // Defensive normalisation: the API SHOULD always return the
+          // 4 book sides, but if a snapshot is malformed (e.g. truncated
+          // ClickHouse row, missing JSON column) we don't want to crash
+          // the whole page on `.bids.length` access.
+          const upBids = book.orderbook_up?.bids ?? [];
+          const upAsks = book.orderbook_up?.asks ?? [];
+          const downBids = book.orderbook_down?.bids ?? [];
+          const downAsks = book.orderbook_down?.asks ?? [];
+          return (
+            <>
+              <div className="text-xs opacity-70">
+                Mid Up:{" "}
                 <span className="font-semibold">
-                  ${formatPx(book.underlying_price)}
+                  {book.mid_yes != null
+                    ? (book.mid_yes * 100).toFixed(2) + "%"
+                    : "—"}
+                </span>{" "}
+                · Spread:{" "}
+                <span className="font-semibold">
+                  {book.spread_yes != null
+                    ? (book.spread_yes * 100).toFixed(2) + "%"
+                    : "—"}
                 </span>
-              </>
-            )}
-          </div>
+                {book.underlying_price != null && (
+                  <>
+                    {" "}
+                    · {meta.ticker || "Underlying"}:{" "}
+                    <span className="font-semibold">
+                      ${formatPx(book.underlying_price)}
+                    </span>
+                  </>
+                )}
+              </div>
 
-          <div className="grid grid-cols-2 gap-3 text-xs">
-            <BookSide
-              title="Up · Bids"
-              levels={book.orderbook_up.bids}
-              accent="success"
-            />
-            <BookSide
-              title="Up · Asks"
-              levels={book.orderbook_up.asks}
-              accent="error"
-            />
-            <BookSide
-              title="Down · Bids"
-              levels={book.orderbook_down.bids}
-              accent="success"
-            />
-            <BookSide
-              title="Down · Asks"
-              levels={book.orderbook_down.asks}
-              accent="error"
-            />
-          </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <BookSide title="Up · Bids" levels={upBids} accent="success" />
+                <BookSide title="Up · Asks" levels={upAsks} accent="error" />
+                <BookSide title="Down · Bids" levels={downBids} accent="success" />
+                <BookSide title="Down · Asks" levels={downAsks} accent="error" />
+              </div>
 
-          {(book.orderbook_up.asks.length === 0 ||
-            book.orderbook_down.bids.length === 0) && (
-            <p className="text-xs opacity-60 italic">
-              Empty sides are normal for binary markets — liquidity tends to
-              concentrate on Up·Bids + Down·Asks (or vice versa). The two
-              sides are mathematically linked: Up_bid + Down_ask ≈ $1.
-            </p>
-          )}
-        </>
+              {(upAsks.length === 0 || downBids.length === 0) && (
+                <p className="text-xs opacity-60 italic">
+                  Empty sides are normal for binary markets — liquidity tends
+                  to concentrate on Up·Bids + Down·Asks (or vice versa). The
+                  two sides are mathematically linked: Up_bid + Down_ask ≈ $1.
+                </p>
+              )}
+            </>
+          );
+        })()
       )}
     </div>
   );
