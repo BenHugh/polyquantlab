@@ -116,6 +116,24 @@ DAILY_NATURAL_RE = re.compile(
     r"-up-or-down-on-[a-z]+-\d+-\d{4}$", re.IGNORECASE
 )
 
+# A slug is binary "Up/Down" structurally if (and only if) it matches one
+# of these. Bracket markets that share a time-window tag (1H, daily, etc.)
+# won't match here — `-above-on-...`, `-week-...`, `-hit-...`, etc. all
+# fail. That's the distinction tags alone can't make.
+UPDOWN_ANY_RE = re.compile(
+    r"-updown-\d+[mhd]-|-up-or-down-(on-)?[a-z]+-\d+-\d{4}", re.IGNORECASE
+)
+
+
+def _is_updown_structure(slug: str) -> bool:
+    """True iff the slug looks like a binary Up/Down market.
+
+    Combined with the time-window tag from Polymarket, this is enough
+    to confidently classify. Tag → "what window". Slug → "what shape".
+    Both must agree before we accept an event for collection.
+    """
+    return bool(UPDOWN_ANY_RE.search(slug.lower()))
+
 
 def is_crypto_event(
     slug: str,
@@ -160,10 +178,15 @@ def classify_event(slug: str, question: str, tags: set[str] | None = None) -> st
         'will-X-hit-Y'                       → "price_target"
         anything else                        → "other"
     """
-    # ---- Pass 1: trust Polymarket's tags --------------------------------
+    # ---- Pass 1: trust Polymarket's tags FOR THE WINDOW, but verify
+    # the structure with the slug. Polymarket uses the same `1H` /
+    # `daily` tag for both binary Up/Down markets AND price-bracket
+    # markets that resolve in the same window (e.g. `bitcoin-above-
+    # on-may-24-2026-5am-et` is a 1H bracket — still tagged `1H`).
+    # We only want Up/Down, so require BOTH signals to agree.
     if tags:
         for tag_slug, mapped in WINDOW_TAG_TO_TYPE.items():
-            if tag_slug in tags:
+            if tag_slug in tags and _is_updown_structure(slug):
                 return mapped
 
     slug_lower = slug.lower()
