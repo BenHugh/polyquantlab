@@ -652,12 +652,81 @@ function TimeScrubber({
   scrubIdx: number;
   onChange: (i: number) => void;
 }) {
-  if (points.length < 2) return null;
-
   const latestIdx = points.length - 1;
   const currentIdx = scrubIdx < 0 ? latestIdx : scrubIdx;
-  const currentTs = points[currentIdx]?.time;
+  const currentTs = points[currentIdx]?.time ?? null;
   const isLatest = scrubIdx < 0;
+
+  // Manual input — text field that mirrors the current scrubber timestamp
+  // but lets the user paste / edit a precise ISO value. Validates on Enter
+  // or "Go" click. Snaps to the nearest snapshot point we actually have
+  // (since the orderbook API takes any ts ≤ requested and finds nearest).
+  const [manualInput, setManualInput] = useState<string>("");
+  const [inputError, setInputError] = useState<string | null>(null);
+
+  // Re-sync the manual input whenever the slider position changes.
+  useEffect(() => {
+    if (currentTs) {
+      setManualInput(currentTs);
+      setInputError(null);
+    }
+  }, [currentTs]);
+
+  // All point timestamps as numeric millis for fast nearest-neighbour search.
+  const pointMs = useMemo(
+    () => points.map((p) => new Date(p.time).getTime()),
+    [points]
+  );
+
+  function jumpToTs(targetMs: number) {
+    if (!Number.isFinite(targetMs) || pointMs.length === 0) return;
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < pointMs.length; i++) {
+      const d = Math.abs(pointMs[i] - targetMs);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    onChange(bestIdx);
+  }
+
+  function applyManualInput() {
+    const trimmed = manualInput.trim();
+    if (!trimmed) {
+      setInputError("Empty");
+      return;
+    }
+    const t = Date.parse(trimmed);
+    if (Number.isNaN(t)) {
+      setInputError("Not a valid ISO timestamp (e.g. 2026-05-24T13:42:00Z)");
+      return;
+    }
+    const minMs = pointMs[0];
+    const maxMs = pointMs[pointMs.length - 1];
+    if (t < minMs - 60_000 || t > maxMs + 60_000) {
+      setInputError(
+        `Outside this market's data window (${new Date(minMs).toISOString().slice(0, 19)}Z to ${new Date(maxMs).toISOString().slice(0, 19)}Z)`
+      );
+      return;
+    }
+    setInputError(null);
+    jumpToTs(t);
+  }
+
+  function jumpDelta(deltaMs: number) {
+    const baseMs = currentTs ? new Date(currentTs).getTime() : pointMs[latestIdx];
+    jumpToTs(baseMs + deltaMs);
+  }
+
+  if (points.length < 2) {
+    return (
+      <div className="rounded-lg border border-base-300 bg-base-100 p-4 text-sm opacity-60 text-center">
+        Not enough snapshots for scrubbing on this market.
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-3">
@@ -665,18 +734,41 @@ function TimeScrubber({
         <div>
           <h3 className="font-semibold">Time scrubber</h3>
           <p className="text-xs opacity-60 mt-0.5">
-            Drag to replay the orderbook at any historical second.
+            Drag the slider, click a quick-jump, or paste an exact
+            timestamp. The orderbook re-fetches 500ms after you stop.
           </p>
         </div>
-        <button
-          className="btn btn-xs btn-outline"
-          disabled={isLatest}
-          onClick={() => onChange(-1)}
-        >
-          Jump to latest
-        </button>
+        <div className="flex flex-wrap gap-1">
+          <button
+            className="btn btn-xs btn-outline"
+            onClick={() => onChange(0)}
+            disabled={currentIdx === 0}
+          >
+            ⏮ Earliest
+          </button>
+          <button
+            className="btn btn-xs btn-outline"
+            onClick={() => jumpDelta(-60_000)}
+          >
+            −1m
+          </button>
+          <button
+            className="btn btn-xs btn-outline"
+            onClick={() => jumpDelta(+60_000)}
+          >
+            +1m
+          </button>
+          <button
+            className="btn btn-xs btn-outline"
+            disabled={isLatest}
+            onClick={() => onChange(-1)}
+          >
+            Latest ⏭
+          </button>
+        </div>
       </div>
 
+      {/* Visual slider — primarily for rough browsing */}
       <input
         type="range"
         min={0}
@@ -684,16 +776,46 @@ function TimeScrubber({
         value={currentIdx}
         onChange={(e) => onChange(parseInt(e.target.value, 10))}
         className="range range-primary range-xs w-full"
+        aria-label="Time scrubber position"
       />
-
-      <div className="flex justify-between text-xs opacity-70">
+      <div className="flex justify-between text-xs opacity-60">
         <span>{formatDate(points[0]?.time)}</span>
-        <span className="font-mono">
-          {isLatest ? "LATEST · " : "AT · "}
-          {formatDate(currentTs)}
-        </span>
+        <span>↔ drag both directions ↔</span>
         <span>{formatDate(points[latestIdx]?.time)}</span>
       </div>
+
+      {/* Manual input — precise, copy-paste friendly */}
+      <div className="flex items-center gap-2 pt-1 border-t border-base-300">
+        <span className="text-xs uppercase tracking-wide opacity-60 w-20">
+          {isLatest ? "Latest" : "At"}
+        </span>
+        <input
+          type="text"
+          value={manualInput}
+          onChange={(e) => {
+            setManualInput(e.target.value);
+            setInputError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              applyManualInput();
+            }
+          }}
+          className={`input input-sm input-bordered flex-1 font-mono text-xs ${inputError ? "input-error" : ""}`}
+          placeholder="2026-05-24T13:42:00.000Z"
+          spellCheck={false}
+        />
+        <button
+          className="btn btn-sm btn-primary"
+          onClick={applyManualInput}
+        >
+          Go
+        </button>
+      </div>
+      {inputError && (
+        <p className="text-xs text-error">{inputError}</p>
+      )}
     </div>
   );
 }
