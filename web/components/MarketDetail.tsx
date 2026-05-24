@@ -22,6 +22,10 @@
  */
 
 import ExportButtons from "@/components/ExportButtons";
+import {
+  formatDateTime as formatDate,
+  formatTimeOnly as formatTime,
+} from "@/libs/formatDate";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 export interface MarketMeta {
@@ -831,34 +835,10 @@ function TimeScrubber({
 // Formatters
 // ---------------------------------------------------------------------------
 
-// All date formatters pin locale to "en-US" so SSR (Node, runs with
-// whatever the VPS / dev-server system locale is) and CSR (browser,
-// uses the user's locale — could be zh-CN, ja-JP, etc.) emit identical
-// strings. Without this we get React hydration mismatches whenever the
-// user's browser locale differs from the server's.
-function formatDate(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function formatTime(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
+// formatDate / formatTime moved to libs/formatDate.ts and imported above.
+// They use primitive Date getters (no ICU dependence) so server-rendered
+// and client-rendered strings are byte-identical, eliminating the
+// hydration-mismatch issue we hit with toLocaleString("en-US", ...).
 
 function formatMoney(n?: number | null): string {
   if (n == null) return "—";

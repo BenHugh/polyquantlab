@@ -1,6 +1,7 @@
 "use client";
 
 import ExportButtons from "@/components/ExportButtons";
+import { formatDateTime as formatDate } from "@/libs/formatDate";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -247,21 +248,8 @@ function normaliseWinner(outcome?: string | null): string | null {
   return outcome;
 }
 
-function formatDate(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  // Force en-US locale so SSR (Node, system locale) and CSR (browser
-  // locale, may be zh-CN/ja-JP/etc) produce identical strings and
-  // hydration doesn't flag a mismatch.
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
+// Date formatting moved to libs/formatDate.ts — locale-independent so
+// SSR and CSR produce byte-identical strings (no hydration mismatch).
 
 function formatMoney(n?: number | null): string {
   if (n == null) return "—";

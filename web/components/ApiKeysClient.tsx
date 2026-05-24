@@ -1,5 +1,6 @@
 "use client";
 
+import { formatDateTime } from "@/libs/formatDate";
 import { useState } from "react";
 import toast from "react-hot-toast";
 
@@ -197,17 +198,11 @@ export default function ApiKeysClient({
   );
 }
 
+// Locale-independent formatter from libs/formatDate. Returns "" instead
+// of "—" for null to keep the table cell visually empty (different
+// requirement than the markets table).
 function formatDate(iso: string | null): string {
   if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  // Pin to en-US so SSR + browser produce the same string (prevents
-  // React hydration mismatch on locale-localised dates).
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const out = formatDateTime(iso);
+  return out === "—" ? "" : out;
 }

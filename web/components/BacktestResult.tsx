@@ -1,6 +1,7 @@
 "use client";
 
 import ExportButtons from "@/components/ExportButtons";
+import { formatDateTime } from "@/libs/formatDate";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -480,16 +481,7 @@ function ParamsCard({ params }: { params: Record<string, unknown> }) {
   );
 }
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  // Pin to en-US so SSR + browser produce the same string (prevents
-  // React hydration mismatch on locale-localised dates).
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
+// Date formatting delegated to libs/formatDate so SSR + CSR produce
+// identical strings (avoids hydration mismatch). Re-export under the
+// local name so existing call sites don't change.
+const formatDate = formatDateTime;
