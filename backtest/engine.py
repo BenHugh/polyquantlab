@@ -41,13 +41,62 @@ def _platform_of(market_id: str) -> str:
     return "kalshi" if market_id.startswith("kalshi:") else "polymarket"
 
 
+def _settle_trade_pnl(trade: Trade, yes_resolved_price: float) -> Trade:
+    """Take an open Trade and a known resolution outcome, return a new
+    Trade with `pnl` populated.
+
+    Math:
+      shares = size / price
+      payoff = shares * (value of your side at settlement)
+        - BUY_YES: value = yes_resolved_price       (1.0 if YES won, 0 if NO won)
+        - BUY_NO:  value = 1 - yes_resolved_price   (1.0 if NO won, 0 if YES won)
+        - SELL_YES / SELL_NO: inverse (rare in v0; we mostly buy)
+      pnl    = payoff - size  (gross, before fees)
+
+    The result is at most a loss of `size` and at most a profit of
+    `size * (1/price - 1)` per dollar staked.
+    """
+    if trade.side == Side.BUY_YES:
+        value_per_share = yes_resolved_price
+    elif trade.side == Side.BUY_NO:
+        value_per_share = 1.0 - yes_resolved_price
+    elif trade.side == Side.SELL_YES:
+        # Short YES: you collected `size` USD at fill, owe shares at settlement
+        value_per_share = -yes_resolved_price
+    elif trade.side == Side.SELL_NO:
+        value_per_share = -(1.0 - yes_resolved_price)
+    else:
+        return trade  # unknown side — leave pnl as None
+
+    shares = trade.size / trade.price if trade.price > 0 else 0.0
+    payoff = shares * value_per_share
+    if trade.side in (Side.BUY_YES, Side.BUY_NO):
+        pnl = payoff - trade.size
+    else:
+        # For sells, we collected `size` upfront and pay `shares * value` later
+        pnl = trade.size + payoff
+
+    # dataclass(frozen=True) → use dataclasses.replace
+    from dataclasses import replace
+    return replace(
+        trade,
+        pnl=pnl,
+        resolution_yes_price=yes_resolved_price,
+    )
+
+
 def _replay_single_market(
     snapshots: list[OrderBookSnapshot],
     strategy,
     resolution_at: datetime | None,
     yes_resolved_price: float,
 ) -> tuple[list[Trade], float, float]:
-    """Replay one market. Returns (trades, pnl, fees)."""
+    """Replay one market. Returns (trades, pnl, fees).
+
+    The returned trades carry per-trade `pnl` populated at settlement —
+    the BacktestResult on the frontend uses this to plot a real
+    cumulative-PnL curve (not just notional exposure).
+    """
     if not snapshots:
         return [], 0.0, 0.0
 
@@ -99,15 +148,21 @@ def _replay_single_market(
                 price=avg_price,
                 size=filled_usd,
                 slippage_bps=slippage_bps,
+                fees=fee,
             )
         )
         open_position = (side, avg_price, filled_usd)
+
+    # Settle: rewrite each trade with its realised PnL now that we know the
+    # outcome. We keep the original ordering so the frontend can render a
+    # proper cumulative-PnL chart over time.
+    settled_trades = [_settle_trade_pnl(t, yes_resolved_price) for t in trades]
 
     pnl = 0.0
     if open_position is not None:
         side, avg_price, filled_usd = open_position
         pnl = settlement_payoff(side, avg_price, filled_usd, yes_resolved_price)
-    return trades, pnl, fees_total
+    return settled_trades, pnl, fees_total
 
 
 def _sharpe_ratio(per_market_pnls: list[float]) -> float | None:

@@ -47,13 +47,28 @@ class Resolution:
 
 @dataclass(frozen=True)
 class Trade:
-    """A simulated trade executed during backtest."""
+    """A simulated trade executed during backtest.
+
+    `pnl` is populated AFTER the market resolves. For an open trade
+    (during replay) it's None; once the engine knows the resolution
+    outcome, it rewrites the Trade with the realised P&L:
+
+      shares      = size / price
+      payoff      = shares * resolution_value   (1.0 if your side won, 0 otherwise)
+      pnl         = payoff - size               (positive = profit; capped at -size)
+
+    `fees` is the platform fee paid at fill time, separated out so the
+    frontend can show net-of-fees P&L without re-computing.
+    """
     ts: datetime
     market_id: str
     side: Side
     price: float           # Average fill price after walking the book
     size: float            # USD notional
     slippage_bps: float    # vs best price at decision time
+    pnl: float | None = None      # gross P&L (excl. fees); None until settled
+    fees: float = 0.0             # platform fee paid for this fill
+    resolution_yes_price: float | None = None  # 1.0 or 0.0 once known
 
 
 @dataclass
@@ -76,6 +91,9 @@ class BacktestResult:
                     "price": t.price,
                     "size": t.size,
                     "slippage_bps": t.slippage_bps,
+                    "pnl": t.pnl,
+                    "fees": t.fees,
+                    "resolution_yes_price": t.resolution_yes_price,
                 }
                 for t in self.trades
             ],

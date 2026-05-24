@@ -21,6 +21,7 @@
  * dual-axis layout fully under our control.
  */
 
+import ExportButtons from "@/components/ExportButtons";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 export interface MarketMeta {
@@ -366,23 +367,29 @@ function DualAxisChart({
     <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-3">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <h3 className="font-semibold">Up share vs {meta.ticker || "Underlying"} spot</h3>
-        <div className="flex gap-3 text-xs">
-          <span className="flex items-center gap-1">
-            <span
-              className="inline-block w-3 h-0.5"
-              style={{ background: upColor }}
-            />
-            Up share
-          </span>
-          {underValues.length >= 2 && (
+        <div className="flex items-center gap-3">
+          <div className="flex gap-3 text-xs">
             <span className="flex items-center gap-1">
               <span
                 className="inline-block w-3 h-0.5"
-                style={{ background: underColor }}
+                style={{ background: upColor }}
               />
-              {meta.ticker} spot
+              Up share
             </span>
-          )}
+            {underValues.length >= 2 && (
+              <span className="flex items-center gap-1">
+                <span
+                  className="inline-block w-3 h-0.5"
+                  style={{ background: underColor }}
+                />
+                {meta.ticker} spot
+              </span>
+            )}
+          </div>
+          <ExportButtons
+            data={points as unknown as Record<string, unknown>[]}
+            filename={`timeseries-${meta.market_id.slice(0, 16)}`}
+          />
         </div>
       </div>
 

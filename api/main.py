@@ -44,6 +44,7 @@ from api.auth import lookup_api_key, record_usage, require_api_key
 from api.job_store import JobStatus, JobStore
 from api.rate_limiter import RateLimiter
 from api.routes_internal import router as internal_router
+from api.routes_stats import router as stats_router
 from api.tiers import TierLimits, resolve_tier
 from backtest.data_loader import list_resolved_markets, load_snapshots
 from collector.config import get_settings
@@ -89,6 +90,7 @@ app = FastAPI(
 # (Stripe webhook sync + dashboard API key management).
 # Auth on every route inside is the shared X-Internal-Secret header.
 app.include_router(internal_router)
+app.include_router(stats_router)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 "use client";
 
+import ExportButtons from "@/components/ExportButtons";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -86,42 +87,48 @@ export default function MarketsTable({
 
   return (
     <div className="space-y-4">
-      {/* Filter tabs */}
-      <div className="flex flex-wrap items-center gap-4">
-        <div className="flex items-center gap-2">
-          <span className="text-xs opacity-60 uppercase tracking-wide">
-            Ticker
-          </span>
-          <div role="tablist" className="tabs tabs-boxed">
-            {TICKERS.map((t) => (
-              <button
-                key={t}
-                role="tab"
-                className={`tab tab-sm ${ticker === t ? "tab-active" : ""}`}
-                onClick={() => setTicker(t)}
-              >
-                {t}
-              </button>
-            ))}
+      {/* Filter tabs + export */}
+      <div className="flex flex-wrap items-center gap-4 justify-between">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xs opacity-60 uppercase tracking-wide">
+              Ticker
+            </span>
+            <div role="tablist" className="tabs tabs-boxed">
+              {TICKERS.map((t) => (
+                <button
+                  key={t}
+                  role="tab"
+                  className={`tab tab-sm ${ticker === t ? "tab-active" : ""}`}
+                  onClick={() => setTicker(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs opacity-60 uppercase tracking-wide">
+              Window
+            </span>
+            <div role="tablist" className="tabs tabs-boxed">
+              {EVENT_TYPES.map((t) => (
+                <button
+                  key={t}
+                  role="tab"
+                  className={`tab tab-sm ${eventType === t ? "tab-active" : ""}`}
+                  onClick={() => setEventType(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs opacity-60 uppercase tracking-wide">
-            Window
-          </span>
-          <div role="tablist" className="tabs tabs-boxed">
-            {EVENT_TYPES.map((t) => (
-              <button
-                key={t}
-                role="tab"
-                className={`tab tab-sm ${eventType === t ? "tab-active" : ""}`}
-                onClick={() => setEventType(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-        </div>
+        <ExportButtons
+          data={markets as unknown as Record<string, unknown>[]}
+          filename={`markets-${ticker.toLowerCase()}-${eventType}-${new Date().toISOString().slice(0, 10)}`}
+        />
       </div>
 
       <div className="rounded-lg border border-base-300 overflow-x-auto">

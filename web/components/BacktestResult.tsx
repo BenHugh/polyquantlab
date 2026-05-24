@@ -1,5 +1,6 @@
 "use client";
 
+import ExportButtons from "@/components/ExportButtons";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -19,6 +20,13 @@ interface Trade {
   price: number;
   size: number;
   slippage_bps: number;
+  // Per-trade fields populated by the engine after settlement (Phase H1).
+  // `pnl` may be null for very old result rows; we render those as
+  // "pending" instead of zero so users don't conflate "no PnL data" with
+  // "PnL was exactly zero".
+  pnl?: number | null;
+  fees?: number;
+  resolution_yes_price?: number | null;
 }
 
 interface BacktestResultBody {
@@ -238,11 +246,12 @@ function Stat({
   );
 }
 
-// PnL is computed per-trade as a running cumulative line. We don't have
-// individual trade PnL on the wire — only total per market — so the
-// chart shows running notional (size * sign(side)) which approximates
-// exposure over time. For real per-trade PnL we'd need to enrich the
-// trade objects backend-side (TODO Phase F).
+// Real cumulative P&L curve. Each trade now carries its realised P&L
+// (computed by the engine at settlement; see backtest/engine.py
+// _settle_trade_pnl). We sum trades in time-order and draw the equity
+// curve — what quants actually want to see when judging a strategy.
+//
+// Net = gross P&L − fees per trade.
 function PnLChart({ trades }: { trades: Trade[] }) {
   if (trades.length < 2) {
     return (
@@ -251,21 +260,40 @@ function PnLChart({ trades }: { trades: Trade[] }) {
       </div>
     );
   }
-  // Cumulative notional (positive = long YES, negative = long NO).
+
+  // Sort by timestamp just in case the engine returned per-market batches.
+  const sorted = [...trades].sort(
+    (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()
+  );
+
+  // Detect whether the result actually has per-trade pnl populated. Old
+  // results (pre-Phase H1) won't, in which case we fall back to the
+  // exposure chart so we don't render nonsense.
+  const hasPnl = sorted.some((t) => typeof t.pnl === "number");
+
   let acc = 0;
-  const cum = trades.map((t) => {
-    const signed = t.side.toLowerCase().includes("yes") ? t.size : -t.size;
-    acc += signed;
+  const cum = sorted.map((t) => {
+    if (hasPnl) {
+      const gross = typeof t.pnl === "number" ? t.pnl : 0;
+      const fees = typeof t.fees === "number" ? t.fees : 0;
+      acc += gross - fees;
+    } else {
+      const signed = t.side.toLowerCase().includes("yes") ? t.size : -t.size;
+      acc += signed;
+    }
     return acc;
   });
 
   const width = 700;
-  const height = 120;
+  const height = 140;
   const lo = Math.min(...cum, 0);
   const hi = Math.max(...cum, 0);
   const range = Math.max(hi - lo, 1e-9);
   const step = width / (cum.length - 1);
   const yZero = height - ((0 - lo) / range) * height;
+
+  // Build path. Also build a fill polygon between the curve and the zero
+  // line so the equity area is visually obvious.
   const path = cum
     .map((v, i) => {
       const x = i * step;
@@ -274,28 +302,69 @@ function PnLChart({ trades }: { trades: Trade[] }) {
     })
     .join(" ");
 
+  // Filled polygon (only used when we have real PnL)
+  const fillPath =
+    hasPnl && cum.length >= 2
+      ? `${path} L${(cum.length - 1) * step},${yZero} L0,${yZero} Z`
+      : null;
+
+  const finalValue = cum[cum.length - 1];
+  const finalGood = finalValue >= 0;
+
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-2">
-      <h3 className="font-semibold">Cumulative exposure</h3>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="font-semibold">
+          {hasPnl ? "Equity curve (net P&L)" : "Cumulative exposure"}
+        </h3>
+        {hasPnl && (
+          <span
+            className={`font-mono text-sm ${
+              finalGood ? "text-success" : "text-error"
+            }`}
+          >
+            {finalGood ? "+" : ""}${finalValue.toFixed(2)}
+          </span>
+        )}
+      </div>
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="w-full h-32"
+        className="w-full h-36"
         preserveAspectRatio="none"
       >
+        {fillPath && (
+          <path
+            d={fillPath}
+            fill={finalGood ? "oklch(70% 0.15 150)" : "oklch(65% 0.18 25)"}
+            fillOpacity={0.15}
+          />
+        )}
         <line
           x1={0}
           x2={width}
           y1={yZero}
           y2={yZero}
           stroke="currentColor"
-          strokeOpacity={0.2}
+          strokeOpacity={0.3}
           strokeDasharray="4 4"
         />
-        <path d={path} fill="none" stroke="oklch(60% 0.2 250)" strokeWidth={1.5} />
+        <path
+          d={path}
+          fill="none"
+          stroke={
+            hasPnl
+              ? finalGood
+                ? "oklch(60% 0.18 150)"
+                : "oklch(55% 0.2 25)"
+              : "oklch(60% 0.2 250)"
+          }
+          strokeWidth={1.75}
+        />
       </svg>
       <p className="text-xs opacity-60">
-        Cumulative signed notional (Up = positive, Down = negative). Per-trade
-        PnL accounting is computed at settlement; see total PnL above.
+        {hasPnl
+          ? "Net realised P&L (gross − fees) compounded trade-by-trade in chronological order. Drawdown areas are highlighted."
+          : "Cumulative signed notional. This result was computed before per-trade P&L was added — re-run the backtest to see the real equity curve."}
       </p>
     </div>
   );
@@ -303,7 +372,15 @@ function PnLChart({ trades }: { trades: Trade[] }) {
 
 function TradesTable({ trades }: { trades: Trade[] }) {
   return (
-    <div className="rounded-lg border border-base-300 bg-base-100 overflow-x-auto">
+    <div className="rounded-lg border border-base-300 bg-base-100">
+      <div className="flex items-center justify-between p-3 border-b border-base-300">
+        <h3 className="font-semibold text-sm">Trades</h3>
+        <ExportButtons
+          data={trades as unknown as Record<string, unknown>[]}
+          filename={`backtest-trades-${new Date().toISOString().slice(0, 10)}`}
+        />
+      </div>
+      <div className="overflow-x-auto">
       <table className="table table-sm">
         <thead>
           <tr>
@@ -313,46 +390,68 @@ function TradesTable({ trades }: { trades: Trade[] }) {
             <th className="text-right">Fill price</th>
             <th className="text-right">Size</th>
             <th className="text-right">Slippage (bps)</th>
+            <th className="text-right">Net P&L</th>
           </tr>
         </thead>
         <tbody>
           {trades.length === 0 && (
             <tr>
-              <td colSpan={6} className="text-center opacity-60 py-6">
+              <td colSpan={7} className="text-center opacity-60 py-6">
                 Strategy didn&apos;t fire any trades.
               </td>
             </tr>
           )}
-          {trades.slice(0, 200).map((t, i) => (
-            <tr key={i}>
-              <td className="whitespace-nowrap">{formatDate(t.ts)}</td>
-              <td className="font-mono text-xs">
-                <Link
-                  href={`/dashboard/markets/${encodeURIComponent(t.market_id)}`}
-                  className="link link-hover"
+          {trades.slice(0, 200).map((t, i) => {
+            const gross = typeof t.pnl === "number" ? t.pnl : null;
+            const fees = typeof t.fees === "number" ? t.fees : 0;
+            const net = gross != null ? gross - fees : null;
+            return (
+              <tr key={i}>
+                <td className="whitespace-nowrap">{formatDate(t.ts)}</td>
+                <td className="font-mono text-xs">
+                  <Link
+                    href={`/dashboard/markets/${encodeURIComponent(t.market_id)}`}
+                    className="link link-hover"
+                  >
+                    {t.market_id.slice(0, 12)}…
+                  </Link>
+                </td>
+                <td>
+                  <SideBadge side={t.side} />
+                </td>
+                <td className="text-right tabular-nums">
+                  {(t.price * 100).toFixed(2)}¢
+                </td>
+                <td className="text-right tabular-nums">
+                  ${t.size.toFixed(2)}
+                </td>
+                <td className="text-right tabular-nums">
+                  {t.slippage_bps.toFixed(1)}
+                </td>
+                <td
+                  className={`text-right tabular-nums ${
+                    net == null
+                      ? "opacity-50"
+                      : net > 0
+                        ? "text-success"
+                        : net < 0
+                          ? "text-error"
+                          : ""
+                  }`}
                 >
-                  {t.market_id.slice(0, 12)}…
-                </Link>
-              </td>
-              <td>
-                <SideBadge side={t.side} />
-              </td>
-              <td className="text-right tabular-nums">
-                {(t.price * 100).toFixed(2)}¢
-              </td>
-              <td className="text-right tabular-nums">
-                ${t.size.toFixed(2)}
-              </td>
-              <td className="text-right tabular-nums">
-                {t.slippage_bps.toFixed(1)}
-              </td>
-            </tr>
-          ))}
+                  {net == null
+                    ? "—"
+                    : `${net >= 0 ? "+" : ""}$${net.toFixed(2)}`}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+      </div>
       {trades.length > 200 && (
-        <div className="text-xs opacity-60 px-3 py-2">
-          Showing first 200 of {trades.length} trades.
+        <div className="text-xs opacity-60 px-3 py-2 border-t border-base-300">
+          Showing first 200 of {trades.length} trades — export to get all of them.
         </div>
       )}
     </div>

@@ -1,0 +1,156 @@
+"use client";
+
+/**
+ * One-click export of any tabular data the dashboard already has in
+ * memory. Works fully client-side — no extra backend endpoint needed
+ * because the data was already fetched as JSON. Just downloads what's
+ * in state.
+ *
+ * Two formats:
+ *   - CSV (most users — pop into Excel / Sheets / pandas)
+ *   - JSON (devs — pipe into a script)
+ *
+ * The CSV converter handles nested objects (flattens to `parent.child`),
+ * arrays (stringifies as JSON), and properly quotes strings containing
+ * commas / quotes / newlines.
+ */
+
+import { useState } from "react";
+
+interface ExportButtonsProps {
+  /** Rows to export. Each row is a flat (or near-flat) object. */
+  data: Record<string, unknown>[];
+  /** Base filename (no extension). E.g. "btc-markets-2026-05-24". */
+  filename: string;
+  /** Optional column order. If omitted, columns are inferred from row 0. */
+  columns?: string[];
+  /** Optional small className override for layout integration. */
+  className?: string;
+}
+
+export default function ExportButtons({
+  data,
+  filename,
+  columns,
+  className,
+}: ExportButtonsProps) {
+  const [open, setOpen] = useState(false);
+  const disabled = !data || data.length === 0;
+
+  function trigger(format: "csv" | "json") {
+    if (disabled) return;
+    if (format === "json") {
+      downloadBlob(
+        JSON.stringify(data, null, 2),
+        `${filename}.json`,
+        "application/json"
+      );
+    } else {
+      downloadBlob(toCsv(data, columns), `${filename}.csv`, "text/csv");
+    }
+    setOpen(false);
+  }
+
+  return (
+    <div className={`dropdown dropdown-end ${className ?? ""}`}>
+      <button
+        className="btn btn-xs btn-outline"
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+      >
+        Export ⇣
+      </button>
+      {open && (
+        <ul className="dropdown-content menu z-10 mt-1 p-1 shadow bg-base-100 border border-base-300 rounded-box w-32">
+          <li>
+            <button onClick={() => trigger("csv")} className="text-sm">
+              CSV
+            </button>
+          </li>
+          <li>
+            <button onClick={() => trigger("json")} className="text-sm">
+              JSON
+            </button>
+          </li>
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CSV converter
+// ---------------------------------------------------------------------------
+
+function toCsv(
+  rows: Record<string, unknown>[],
+  columns?: string[]
+): string {
+  if (rows.length === 0) return "";
+  const cols = columns ?? inferColumns(rows);
+  const head = cols.map(csvEscape).join(",");
+  const body = rows
+    .map((row) =>
+      cols
+        .map((c) => csvEscape(stringifyCell(row[c])))
+        .join(",")
+    )
+    .join("\n");
+  return `${head}\n${body}\n`;
+}
+
+function inferColumns(rows: Record<string, unknown>[]): string[] {
+  // Use the union of keys across the first 50 rows, in first-seen order,
+  // so an early row with missing fields doesn't drop columns that appear
+  // later. Cap at 50 to stay O(1) for huge datasets.
+  const seen = new Set<string>();
+  const order: string[] = [];
+  for (let i = 0; i < Math.min(rows.length, 50); i++) {
+    for (const k of Object.keys(rows[i])) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        order.push(k);
+      }
+    }
+  }
+  return order;
+}
+
+function stringifyCell(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  // Objects / arrays → JSON-encode (keeps the CSV one-row-per-record)
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return "";
+  }
+}
+
+function csvEscape(s: string): string {
+  // RFC 4180: quote any field containing comma, quote, or newline.
+  // Inside the quoted field, double any embedded quotes.
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Browser download trigger
+// ---------------------------------------------------------------------------
+
+function downloadBlob(content: string, filename: string, mime: string) {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    a.remove();
+  }, 0);
+}

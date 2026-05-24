@@ -39,11 +39,23 @@ export default async function Dashboard() {
 
           <Link
             href="/dashboard/backtest"
-            className="rounded-lg border border-base-300 p-4 hover:bg-base-200 transition sm:col-span-2"
+            className="rounded-lg border border-base-300 p-4 hover:bg-base-200 transition"
           >
             <div className="font-semibold">Backtests</div>
             <p className="text-sm opacity-70 mt-1">
               Build and run a strategy against historical orderbook data.
+            </p>
+          </Link>
+
+          <Link
+            href="/dashboard/stats/calibration"
+            className="rounded-lg border border-base-300 p-4 hover:bg-base-200 transition sm:col-span-2"
+          >
+            <div className="font-semibold">Market calibration</div>
+            <p className="text-sm opacity-70 mt-1">
+              Is Polymarket well-calibrated? Implied vs realised Up rates,
+              per ticker and per window — the data Polymarket itself
+              doesn&apos;t publish.
             </p>
           </Link>
         </div>
