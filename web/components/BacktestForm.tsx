@@ -26,6 +26,16 @@ const TICKERS = ["BTC", "ETH", "SOL"] as const;
 interface FormState {
   ticker: (typeof TICKERS)[number];
   marketLimit: number;
+  // Time window — empty string means "no filter" (use all available data
+  // up to the market_limit cap). ISO 8601 datetime strings. The backend
+  // already accepts these via the existing `since` / `until` params.
+  //
+  // Use case: train/test split. Run one backtest with since=A, until=B
+  // (training); then re-run with since=B, until=now (validation). If
+  // both have positive Sharpe, the signal isn't an artefact of the
+  // training period.
+  since: string;
+  until: string;
   strategyType: StrategyType;
   // threshold_entry
   threshold: number;
@@ -43,6 +53,8 @@ interface FormState {
 const DEFAULTS: FormState = {
   ticker: "BTC",
   marketLimit: 10,
+  since: "",
+  until: "",
   strategyType: "threshold_entry",
   threshold: 0.3,
   direction: "below",
@@ -53,6 +65,17 @@ const DEFAULTS: FormState = {
   minutesBefore: 60,
   minutesWindow: 5,
 };
+
+/** Helper: ISO string for "N days ago, midnight UTC". Used by the
+ * preset buttons so users don't have to type dates manually. */
+function daysAgoUtc(days: number): string {
+  const d = new Date(Date.now() - days * 86_400_000);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 16); // YYYY-MM-DDTHH:mm
+}
+function nowUtc(): string {
+  return new Date().toISOString().slice(0, 16);
+}
 
 export default function BacktestForm({
   maxMarketLimit,
@@ -106,6 +129,10 @@ export default function BacktestForm({
     }
     setSubmitting(true);
     try {
+      // Coerce empty-string time bounds to undefined so the FastAPI
+      // schema's optional datetime parsing isn't tripped by "".
+      const sinceIso = s.since ? new Date(s.since).toISOString() : undefined;
+      const untilIso = s.until ? new Date(s.until).toISOString() : undefined;
       const res = await fetch("/api/backtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -113,6 +140,8 @@ export default function BacktestForm({
           strategy: buildStrategySpec(),
           ticker: s.ticker,
           market_limit: s.marketLimit,
+          ...(sinceIso ? { since: sinceIso } : {}),
+          ...(untilIso ? { until: untilIso } : {}),
         }),
       });
       if (!res.ok && res.status !== 202) {
@@ -172,6 +201,99 @@ export default function BacktestForm({
             />
           </label>
         </div>
+      </fieldset>
+
+      {/* Time window — for train/test splits */}
+      <fieldset className="space-y-3 border-t border-base-300 pt-4">
+        <legend className="font-semibold">Time window</legend>
+        <p className="text-xs opacity-60">
+          Filter which resolved markets are sampled. Leave empty to use
+          all available data (default). For a proper train/test split,
+          run two backtests with non-overlapping windows.
+        </p>
+
+        {/* Quick presets — fill in the inputs with common patterns */}
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-xs btn-outline"
+            onClick={() => {
+              update("since", "");
+              update("until", "");
+            }}
+          >
+            All time
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs btn-outline"
+            onClick={() => {
+              update("since", daysAgoUtc(1));
+              update("until", nowUtc());
+            }}
+          >
+            Last 24h
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs btn-outline"
+            onClick={() => {
+              update("since", daysAgoUtc(7));
+              update("until", nowUtc());
+            }}
+          >
+            Last 7d
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs btn-outline"
+            onClick={() => {
+              update("since", daysAgoUtc(30));
+              update("until", daysAgoUtc(7));
+            }}
+          >
+            Days 8–30 ago (train)
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs btn-outline"
+            onClick={() => {
+              update("since", daysAgoUtc(7));
+              update("until", nowUtc());
+            }}
+          >
+            Last 7d (validate)
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <label className="form-control">
+            <span className="label-text">Since (UTC)</span>
+            <input
+              type="datetime-local"
+              className="input input-bordered"
+              value={s.since}
+              onChange={(e) => update("since", e.target.value)}
+            />
+          </label>
+          <label className="form-control">
+            <span className="label-text">Until (UTC)</span>
+            <input
+              type="datetime-local"
+              className="input input-bordered"
+              value={s.until}
+              onChange={(e) => update("until", e.target.value)}
+            />
+          </label>
+        </div>
+
+        {s.since && s.until && (
+          <div className="alert alert-info p-2 text-xs">
+            Sampling markets that resolved between{" "}
+            <code>{s.since.replace("T", " ")}Z</code> and{" "}
+            <code>{s.until.replace("T", " ")}Z</code>.
+          </div>
+        )}
       </fieldset>
 
       {/* Strategy */}
