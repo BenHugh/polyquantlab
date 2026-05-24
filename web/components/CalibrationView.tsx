@@ -34,7 +34,18 @@ interface CalibrationResponse {
 }
 
 const TICKERS = ["ALL", "BTC", "ETH", "SOL"] as const;
-const EVENT_TYPES = ["ALL", "5m", "15m", "1h", "4h", "24h"] as const;
+// Must match the strings actually written by the collector into
+// `events.event_type` — see components/MarketsTable.tsx for the same
+// list and the rationale (Polymarket doesn't publish 1h or 24h crypto
+// Up/Down markets; the daily ones are stored as `daily_up_down`).
+const EVENT_TYPES = ["ALL", "5m", "15m", "4h", "daily_up_down"] as const;
+const EVENT_TYPE_LABELS: Record<(typeof EVENT_TYPES)[number], string> = {
+  ALL: "ALL",
+  "5m": "5m",
+  "15m": "15m",
+  "4h": "4h",
+  daily_up_down: "Daily",
+};
 const MINUTES_OPTIONS = [0.5, 1, 5, 15, 60] as const;
 
 export default function CalibrationView() {
@@ -93,6 +104,7 @@ export default function CalibrationView() {
           <FilterTabs
             label="Window"
             options={EVENT_TYPES}
+            labels={EVENT_TYPE_LABELS}
             value={eventType}
             onChange={(v) => setEventType(v as typeof eventType)}
           />
@@ -133,12 +145,36 @@ export default function CalibrationView() {
         </div>
       )}
 
-      {data && data.buckets.length > 0 && (
-        <>
-          <SummaryBar data={data} />
-          <CalibrationChart buckets={data.buckets} loading={loading} />
-          <BucketTable buckets={data.buckets} />
-        </>
+      {data && (
+        (() => {
+          const totalN = data.buckets.reduce(
+            (s, b) => s + b.n_markets,
+            0
+          );
+          if (totalN === 0) {
+            return (
+              <div className="rounded-lg border border-base-300 bg-base-100 p-8 text-center space-y-2">
+                <div className="font-semibold">
+                  No resolved markets match this filter.
+                </div>
+                <p className="text-sm opacity-70">
+                  Either we haven&apos;t collected enough data yet for the
+                  selected window, or no snapshots exist at T−
+                  {data.params.minutes_before} min before resolution for
+                  any of those markets. Try a different window, ticker,
+                  or T-minus value.
+                </p>
+              </div>
+            );
+          }
+          return (
+            <>
+              <SummaryBar data={data} />
+              <CalibrationChart buckets={data.buckets} loading={loading} />
+              <BucketTable buckets={data.buckets} />
+            </>
+          );
+        })()
       )}
     </div>
   );
@@ -151,11 +187,14 @@ export default function CalibrationView() {
 function FilterTabs({
   label,
   options,
+  labels,
   value,
   onChange,
 }: {
   label: string;
   options: readonly string[];
+  /** Optional display-label override (e.g. "daily_up_down" → "Daily"). */
+  labels?: Record<string, string>;
   value: string;
   onChange: (v: string) => void;
 }) {
@@ -171,7 +210,7 @@ function FilterTabs({
             className={`tab tab-sm ${value === o ? "tab-active" : ""}`}
             onClick={() => onChange(o)}
           >
-            {o}
+            {labels?.[o] ?? o}
           </button>
         ))}
       </div>

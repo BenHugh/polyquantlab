@@ -39,10 +39,24 @@ export interface ResolvedMarket {
 const TICKERS = ["ALL", "BTC", "ETH", "SOL"] as const;
 type TickerFilter = (typeof TICKERS)[number];
 
-// event_type vocabulary matches the strings used in events table
-// (PolyBackTest schema: "5m", "15m", "1h", "4h", "24h").
-const EVENT_TYPES = ["ALL", "5m", "15m", "1h", "4h", "24h"] as const;
+// event_type vocabulary matches what the collector actually stores in
+// the events table. Polymarket only publishes these windows for BTC/ETH/SOL:
+//   5m, 15m, 4h, daily_up_down ("24h")
+// There is no 1h crypto Up/Down on Polymarket, so we don't offer it.
+// `price_target` is a different market category (e.g. "Will BTC hit $X")
+// and we exclude it from this filter for now.
+const EVENT_TYPES = ["ALL", "5m", "15m", "4h", "daily_up_down"] as const;
 type EventTypeFilter = (typeof EVENT_TYPES)[number];
+
+// Human-friendly label for the daisy tab — `daily_up_down` is too long
+// for the chip layout. All other event types are already short enough.
+const EVENT_TYPE_LABELS: Record<EventTypeFilter, string> = {
+  ALL: "ALL",
+  "5m": "5m",
+  "15m": "15m",
+  "4h": "4h",
+  daily_up_down: "Daily",
+};
 
 export default function MarketsTable({
   initial,
@@ -120,7 +134,7 @@ export default function MarketsTable({
                   className={`tab tab-sm ${eventType === t ? "tab-active" : ""}`}
                   onClick={() => setEventType(t)}
                 >
-                  {t}
+                  {EVENT_TYPE_LABELS[t]}
                 </button>
               ))}
             </div>
