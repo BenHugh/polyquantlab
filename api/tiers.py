@@ -24,6 +24,12 @@ class TierLimits:
     # everything else is read-only ClickHouse / Postgres queries).
     concurrent_backtests: int   # how many backtest jobs this key may have running at once
     max_market_limit: int       # max value the client can pass for `market_limit`
+    # Parameter-sweep size cap. A sweep loads the universe ONCE and replays
+    # the strategy N times in-memory, so the cost scales mainly with cell
+    # count, not market_limit. Empirically a 400-cell sweep over 100
+    # markets is ~30s; 2500-cell ~3min. Caps below leave Premium ~3 min
+    # max wait, Free ~15s.
+    max_sweep_cells: int        # max product(x_steps * y_steps) for /v1/backtest/sweep
     # How far back the user is allowed to query historical data, in days.
     history_days: int
     # Display-only — what we show in the dashboard / pricing page.
@@ -38,6 +44,7 @@ TIERS: dict[str, TierLimits] = {
         rpm=60,
         concurrent_backtests=1,
         max_market_limit=5,
+        max_sweep_cells=25,        # 5×5
         history_days=31,
         display_name="Free",
         monthly_price_usd=0.0,
@@ -47,6 +54,7 @@ TIERS: dict[str, TierLimits] = {
         rpm=300,
         concurrent_backtests=2,
         max_market_limit=20,
+        max_sweep_cells=100,       # 10×10
         history_days=31,
         display_name="Pro",
         monthly_price_usd=19.90,
@@ -56,6 +64,7 @@ TIERS: dict[str, TierLimits] = {
         rpm=1_000,
         concurrent_backtests=3,
         max_market_limit=50,
+        max_sweep_cells=400,       # 20×20
         history_days=60,
         display_name="Plus",
         monthly_price_usd=39.90,
@@ -65,6 +74,7 @@ TIERS: dict[str, TierLimits] = {
         rpm=1_225,
         concurrent_backtests=4,
         max_market_limit=100,
+        max_sweep_cells=900,       # 30×30
         history_days=60,
         display_name="Boost",
         monthly_price_usd=47.90,
@@ -76,6 +86,7 @@ TIERS: dict[str, TierLimits] = {
         rpm=2_000,
         concurrent_backtests=6,
         max_market_limit=200,
+        max_sweep_cells=2500,      # 50×50
         history_days=120,
         display_name="Premium",
         monthly_price_usd=99.90,

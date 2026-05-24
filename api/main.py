@@ -1033,6 +1033,142 @@ async def post_backtest(
     return record.to_dict()
 
 
+# ---------------------------------------------------------------------------
+# Parameter sweep — POST /v1/backtest/sweep
+# ---------------------------------------------------------------------------
+#
+# Unlike single backtest jobs (which run one strategy), a sweep runs a
+# grid of N strategies and returns a 2D heatmap of summary stats. See
+# backtest/sweep.py for the implementation details (the load-once / replay-
+# many architecture that makes large grids feasible).
+#
+# Result shape is different from single backtest, so we tag the JobStore
+# payload with `kind="sweep"` and the frontend dispatches on it.
+
+
+class SweepAxis(BaseModel):
+    """One axis of the parameter grid."""
+    param: str = Field(
+        ...,
+        description=(
+            "Which key in the base strategy spec to override on this axis. "
+            "E.g. 'threshold', 'size_usd', 'lookback'. Must be a numeric "
+            "parameter of the chosen strategy_type."
+        ),
+        examples=["threshold", "size_usd"],
+    )
+    start: float = Field(..., description="First value on this axis.")
+    end: float = Field(..., description="Last value (inclusive).")
+    steps: int = Field(
+        default=5, ge=1, le=100,
+        description="Number of evenly-spaced points between start and end.",
+    )
+
+
+class SweepRequest(BaseModel):
+    strategy: dict[str, Any] = Field(
+        ...,
+        description=(
+            "Base strategy spec (same shape as /v1/backtest). The "
+            "x_axis (and y_axis if provided) override the named params; "
+            "everything else stays fixed across every cell."
+        ),
+    )
+    x_axis: SweepAxis
+    y_axis: SweepAxis | None = None
+    event_type: str | None = None
+    ticker: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    market_limit: int = Field(default=50, le=500)
+
+
+@app.post("/v1/backtest/sweep")
+async def post_backtest_sweep(
+    request: Request,
+    response: Response,
+    body: SweepRequest,
+    auth: dict = Depends(authed_key),
+) -> dict[str, Any]:
+    """Submit a parameter-sweep job. Same async pattern as /v1/backtest —
+    returns 202 + job_id, client polls GET /v1/backtest/{job_id}.
+
+    Tier gates checked:
+      * `market_limit` ≤ tier's max_market_limit (same as single backtest)
+      * Total grid cell count ≤ tier's max_sweep_cells
+      * Per-key in-flight cap (sweeps count against the same
+        concurrent_backtests budget as single backtests)
+    """
+    tier_limits: TierLimits = auth["tier_limits"]
+
+    # Tier gate 1: market_limit
+    if body.market_limit > tier_limits.max_market_limit:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"{tier_limits.display_name} tier allows market_limit up to "
+                f"{tier_limits.max_market_limit}; you requested {body.market_limit}."
+            ),
+        )
+
+    # Tier gate 2: total grid size
+    y_steps = body.y_axis.steps if body.y_axis else 1
+    n_cells = body.x_axis.steps * y_steps
+    if n_cells > tier_limits.max_sweep_cells:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"{tier_limits.display_name} tier allows up to "
+                f"{tier_limits.max_sweep_cells} sweep cells; you requested "
+                f"{body.x_axis.steps}×{y_steps}={n_cells}. Reduce steps or upgrade."
+            ),
+        )
+
+    # Tier gate 3: per-key concurrency (shared budget with single backtests)
+    api_key_id = str(auth["api_key_id"])
+    job_store: JobStore = request.app.state.job_store
+    recent = await job_store.list_for_user(api_key_id, limit=tier_limits.concurrent_backtests + 5)
+    in_flight = sum(1 for j in recent if j.status in (JobStatus.QUEUED, JobStatus.RUNNING))
+    if in_flight >= tier_limits.concurrent_backtests:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"{tier_limits.display_name} tier allows "
+                f"{tier_limits.concurrent_backtests} concurrent backtest/sweep "
+                f"jobs; you have {in_flight} in flight."
+            ),
+            headers={"Retry-After": "5"},
+        )
+
+    params = body.model_dump(mode="json")
+    record = await job_store.create(api_key_id, params)
+
+    arq: ArqRedis = request.app.state.arq
+    try:
+        await arq.enqueue_job(
+            "run_sweep_job",
+            record.job_id,
+            body.strategy,
+            body.x_axis.model_dump(),
+            body.y_axis.model_dump() if body.y_axis else None,
+            body.event_type,
+            body.ticker,
+            body.since.isoformat() if body.since else None,
+            body.until.isoformat() if body.until else None,
+            body.market_limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await job_store.mark_failed(record.job_id, f"enqueue_failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Job queue unavailable; please retry shortly.",
+            headers={"Retry-After": "5"},
+        ) from exc
+
+    response.status_code = status.HTTP_202_ACCEPTED
+    return record.to_dict()
+
+
 @app.get("/v1/backtest/{job_id}")
 async def get_backtest_job(
     job_id: str,

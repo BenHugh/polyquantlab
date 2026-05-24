@@ -51,6 +51,13 @@ export default async function BacktestPage() {
             </h1>
             <p className="text-sm opacity-70 mt-1">
               {tierDisplay} tier · up to {maxMarketLimit} markets per backtest
+              {" "}·{" "}
+              <Link
+                href="/dashboard/backtest/sweep"
+                className="link link-hover"
+              >
+                Or run a parameter sweep →
+              </Link>
             </p>
           </div>
           <ButtonAccount />

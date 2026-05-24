@@ -21,6 +21,7 @@ from arq.connections import RedisSettings
 
 from api.job_store import JobStore
 from backtest.engine import run_backtest
+from backtest.sweep import run_sweep
 from collector.config import get_settings
 from collector.db import make_clickhouse, make_postgres_pool
 from collector.logging_setup import get_logger, setup_logging
@@ -134,6 +135,66 @@ def _redis_settings_from_url(url: str) -> RedisSettings:
     )
 
 
+async def run_sweep_job(
+    ctx: dict,
+    job_id: str,
+    base_strategy_spec: dict[str, Any],
+    x_axis: dict[str, Any],
+    y_axis: dict[str, Any] | None,
+    event_type: str | None,
+    ticker: str | None,
+    since: str | None,
+    until: str | None,
+    market_limit: int,
+) -> dict[str, Any]:
+    """Parameter-sweep variant of run_backtest_job. Same JobStore state
+    machine, same error handling — but the payload is a 2D grid of
+    summary stats instead of a single backtest result."""
+    store: JobStore = ctx["job_store"]
+    await store.mark_running(job_id)
+
+    def _parse_dt(v: str | None) -> datetime | None:
+        return datetime.fromisoformat(v) if v else None
+
+    try:
+        result = await run_sweep(
+            ch=ctx["ch"],
+            pg_pool=ctx["pg"],
+            base_strategy_spec=base_strategy_spec,
+            x_axis=x_axis,
+            y_axis=y_axis,
+            event_type=event_type,
+            ticker=ticker,
+            since=_parse_dt(since),
+            until=_parse_dt(until),
+            market_limit=market_limit,
+        )
+        # Tag the payload so the dashboard can tell a sweep result from
+        # a regular backtest result.
+        result["kind"] = "sweep"
+        await store.mark_completed(job_id, result)
+        log.info(
+            "sweep_done",
+            job_id=job_id,
+            n_cells=result.get("n_cells"),
+            n_markets=result.get("n_markets_in_universe"),
+        )
+        return result
+    except asyncio.CancelledError:
+        await store.mark_failed(
+            job_id,
+            f"TimeoutError: sweep exceeded {WORKER_JOB_TIMEOUT_S}s.",
+        )
+        log.error("sweep_timed_out", job_id=job_id)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        tb = traceback.format_exc()
+        err = f"{type(exc).__name__}: {exc}\n{tb[-1500:]}"
+        await store.mark_failed(job_id, err)
+        log.error("sweep_failed", job_id=job_id, error=str(exc))
+        raise
+
+
 # Centralised so the timeout copy in the error message stays in sync.
 # 300s = 5 min covers a Premium-tier 200-market backtest with room. Real
 # CPU work per market is ~200ms, so 200 markets in serial ≈ 40s, and
@@ -145,7 +206,7 @@ WORKER_JOB_TIMEOUT_S = 300
 
 
 class WorkerSettings:
-    functions = [run_backtest_job]
+    functions = [run_backtest_job, run_sweep_job]
     on_startup = startup
     on_shutdown = shutdown
     # 6 concurrent jobs per worker process. With ARQ each job is a
