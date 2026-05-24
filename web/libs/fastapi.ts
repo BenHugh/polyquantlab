@@ -177,18 +177,36 @@ export async function fastapiGet<T = unknown>(
 
 /** Forward an incoming Next.js request to a FastAPI path, preserving the
  *  query string. Used by `/api/markets/*` proxy routes — keeps them as
- *  thin one-liners. */
+ *  thin one-liners.
+ *
+ *  If the caller has a Supabase session, pass the user's email as the
+ *  optional `userEmail` argument and we forward it as X-User-Email so
+ *  endpoints that need user identity (paper trading) can see it. The
+ *  FastAPI side trusts this header because the only way to reach it is
+ *  via the internal-secret-authenticated proxy.
+ */
 export async function fastapiProxy(
   request: Request,
-  fastapiPath: string
+  fastapiPath: string,
+  opts?: { method?: string; userEmail?: string }
 ): Promise<Response> {
   // Forward the inbound URL's query string verbatim.
   const incoming = new URL(request.url);
   const target = fastapiPath + incoming.search;
+  // For non-GET requests, forward the body. (GETs ignore body anyway.)
+  const method = opts?.method || request.method;
+  const isBodyMethod = method !== "GET" && method !== "HEAD";
+  const body = isBodyMethod ? await request.text() : undefined;
+  const extraHeaders: Record<string, string> = {};
+  if (opts?.userEmail) extraHeaders["X-User-Email"] = opts.userEmail;
   try {
-    const res = await internalFetch(target);
-    const body = await res.text();
-    return new Response(body, {
+    const res = await internalFetch(target, {
+      method,
+      ...(body !== undefined ? { body } : {}),
+      headers: extraHeaders,
+    });
+    const text = await res.text();
+    return new Response(text, {
       status: res.status,
       headers: {
         "Content-Type": res.headers.get("Content-Type") || "application/json",

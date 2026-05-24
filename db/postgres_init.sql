@@ -94,3 +94,54 @@ CREATE TABLE IF NOT EXISTS api_usage_daily (
     bytes_returned     BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (api_key_id, day)
 );
+
+-- ---------------------------------------------------------------------------
+-- Paper trading (Phase H5) — see db/migrations/003_paper_trading.sql for
+-- the canonical version. Duplicated here so a fresh `psql -f
+-- postgres_init.sql` install gets the full schema without having to
+-- replay every migration.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS paper_strategies (
+    paper_strategy_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_email         TEXT NOT NULL,
+    name               TEXT,
+    strategy_spec      JSONB NOT NULL,
+    ticker             TEXT,
+    event_type         TEXT,
+    size_usd           NUMERIC(12, 2) NOT NULL DEFAULT 10,
+    started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    paused_at          TIMESTAMPTZ,
+    active             BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS paper_strategies_user_active_idx
+    ON paper_strategies (user_email, active);
+
+CREATE TABLE IF NOT EXISTS paper_positions (
+    paper_position_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    paper_strategy_id     UUID NOT NULL
+        REFERENCES paper_strategies (paper_strategy_id) ON DELETE CASCADE,
+    market_id             TEXT NOT NULL,
+    side                  TEXT NOT NULL,
+    fill_price            NUMERIC(8, 6) NOT NULL,
+    size_usd              NUMERIC(12, 2) NOT NULL,
+    slippage_bps          NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    fees                  NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    opened_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    closed_at             TIMESTAMPTZ,
+    resolution_yes_price  NUMERIC(4, 3),
+    pnl                   NUMERIC(12, 2),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS paper_positions_strategy_opened_idx
+    ON paper_positions (paper_strategy_id, opened_at DESC);
+
+CREATE INDEX IF NOT EXISTS paper_positions_open_on_market_idx
+    ON paper_positions (market_id)
+    WHERE closed_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS paper_positions_strategy_market_uq
+    ON paper_positions (paper_strategy_id, market_id);

@@ -49,13 +49,24 @@ export default async function Dashboard() {
 
           <Link
             href="/dashboard/stats/calibration"
-            className="rounded-lg border border-base-300 p-4 hover:bg-base-200 transition sm:col-span-2"
+            className="rounded-lg border border-base-300 p-4 hover:bg-base-200 transition"
           >
             <div className="font-semibold">Market calibration</div>
             <p className="text-sm opacity-70 mt-1">
               Is Polymarket well-calibrated? Implied vs realised Up rates,
-              per ticker and per window — the data Polymarket itself
-              doesn&apos;t publish.
+              per ticker and per window.
+            </p>
+          </Link>
+
+          <Link
+            href="/dashboard/paper"
+            className="rounded-lg border border-base-300 p-4 hover:bg-base-200 transition sm:col-span-2"
+          >
+            <div className="font-semibold">Paper trading</div>
+            <p className="text-sm opacity-70 mt-1">
+              Save a strategy. We&apos;ll run it on every new snapshot —
+              real-time virtual fills, virtual P&L, no real money. The
+              honest way to validate a backtest before deploying capital.
             </p>
           </Link>
         </div>
