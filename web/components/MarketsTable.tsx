@@ -244,7 +244,10 @@ function formatDate(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
+  // Force en-US locale so SSR (Node, system locale) and CSR (browser
+  // locale, may be zh-CN/ja-JP/etc) produce identical strings and
+  // hydration doesn't flag a mismatch.
+  return d.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",

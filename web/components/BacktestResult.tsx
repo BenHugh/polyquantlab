@@ -384,7 +384,9 @@ function ParamsCard({ params }: { params: Record<string, unknown> }) {
 function formatDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
+  // Pin to en-US so SSR + browser produce the same string (prevents
+  // React hydration mismatch on locale-localised dates).
+  return d.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
