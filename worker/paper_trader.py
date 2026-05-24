@@ -94,6 +94,12 @@ def _parse_levels(raw: Any) -> list[OrderBookLevel]:
 
 def _row_to_snapshot(row: tuple, ticker: str) -> OrderBookSnapshot:
     market_id, ts, yes_bids, yes_asks, no_bids, no_asks, underlying = row
+    # ClickHouse returns DateTime64 as naive datetimes in Python. Postgres
+    # gives us tz-aware UTC. Mixing them blows up later (`snap.ts <
+    # strategy.started_at` raises TypeError on naive-vs-aware comparison).
+    # Force-tag ts as UTC — that's what ClickHouse actually stores.
+    if ts is not None and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
     return OrderBookSnapshot(
         market_id=market_id,
         ts=ts,
@@ -374,8 +380,17 @@ async def run_paper_trader_forever(
                 settled=settled,
                 window_s=PAPER_POLL_INTERVAL_S,
             )
-        except Exception:  # noqa: BLE001
-            log.exception("paper_cycle_failed")
+        except Exception as exc:  # noqa: BLE001
+            # structlog's default JSON renderer drops `exc_info` to just
+            # the boolean — no traceback in journalctl. Pull the stack
+            # via traceback.format_exc so we can debug from logs alone
+            # next time without spinning up a manual repro.
+            import traceback
+            log.error(
+                "paper_cycle_failed",
+                error=f"{type(exc).__name__}: {exc}",
+                traceback=traceback.format_exc()[-2000:],
+            )
 
         # Advance both cursors with a small overlap so we never miss
         # rows on the boundary. ON CONFLICT deduplicates re-processing.
