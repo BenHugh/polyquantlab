@@ -40,15 +40,16 @@ const TICKERS = ["ALL", "BTC", "ETH", "SOL"] as const;
 type TickerFilter = (typeof TICKERS)[number];
 
 // event_type vocabulary matches what the collector actually stores in
-// the events table. Polymarket's crypto Up/Down catalog covers:
-//   5m, 15m, 1h, 4h, daily, (occasionally weekly/monthly/yearly brackets)
-// The 1h markets come through a different slug pattern than 5m/15m/4h,
-// see collector/discovery.py:classify_event for the discriminator.
-const EVENT_TYPES = ["ALL", "5m", "15m", "1h", "4h", "daily_up_down"] as const;
+// the events table. Up/Down markets (binary): 5m/15m/1h/4h/daily.
+// Bracket markets (multi-price): weekly/monthly/yearly. See
+// collector/discovery.py:WINDOW_TAG_TO_TYPE for the source-of-truth
+// mapping.
+const EVENT_TYPES = [
+  "ALL", "5m", "15m", "1h", "4h", "daily_up_down",
+  "weekly_bracket", "monthly_bracket", "yearly_bracket",
+] as const;
 type EventTypeFilter = (typeof EVENT_TYPES)[number];
 
-// Human-friendly label for the daisy tab — `daily_up_down` is too long
-// for the chip layout. All other event types are already short enough.
 const EVENT_TYPE_LABELS: Record<EventTypeFilter, string> = {
   ALL: "ALL",
   "5m": "5m",
@@ -56,6 +57,9 @@ const EVENT_TYPE_LABELS: Record<EventTypeFilter, string> = {
   "1h": "1h",
   "4h": "4h",
   daily_up_down: "Daily",
+  weekly_bracket: "Weekly",
+  monthly_bracket: "Monthly",
+  yearly_bracket: "Yearly",
 };
 
 export default function MarketsTable({

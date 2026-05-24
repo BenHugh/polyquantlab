@@ -49,6 +49,39 @@ log = get_logger(__name__)
 
 CRYPTO_TOKENS = ("btc", "bitcoin", "eth", "ethereum", "sol", "solana")
 
+# Polymarket tags Gamma sets on every event. These are the source of
+# truth for "what kind of market this is" — much more reliable than
+# our previous slug-pattern guessing. We index these tags into:
+#   - event_type (the window: 5m / 15m / 1h / 4h / daily / weekly / monthly / yearly)
+#   - is_crypto  (whether the event is in a crypto category at all)
+WINDOW_TAG_TO_TYPE: dict[str, str] = {
+    "5m": "5m",
+    "15m": "15m",
+    "1h": "1h",
+    "4h": "4h",
+    "daily": "daily_up_down",
+    "weekly": "weekly_bracket",
+    "monthly": "monthly_bracket",
+    "yearly": "yearly_bracket",
+}
+CRYPTO_CATEGORY_TAGS = {"crypto", "crypto-prices", "bitcoin", "ethereum",
+                        "solana", "xrp", "ripple", "dogecoin", "bnb", "hype"}
+
+
+def _event_tag_slugs(event: dict[str, Any]) -> set[str]:
+    """Return the lowercased set of tag slugs on an event.
+
+    Polymarket returns tags as `[{"slug": "5M", "label": "5M"}, ...]`.
+    We lowercase for case-insensitive matching (their casing is
+    inconsistent — "5M" / "15M" / "1H" but "4h" / "daily" / "weekly")."""
+    out: set[str] = set()
+    for t in event.get("tags") or []:
+        if isinstance(t, dict):
+            s = t.get("slug") or t.get("label")
+            if s:
+                out.add(str(s).lower())
+    return out
+
 # Polymarket up/down market slug patterns. Polymarket uses two distinct
 # conventions for crypto Up/Down markets:
 #
@@ -79,27 +112,55 @@ DAILY_NATURAL_RE = re.compile(
 )
 
 
-def is_crypto_event(slug: str, question: str) -> bool:
+def is_crypto_event(
+    slug: str,
+    question: str,
+    tags: set[str] | None = None,
+) -> bool:
+    """Determine whether an event is in our crypto scope.
+
+    Two signals (either is sufficient):
+      1. Slug or question text contains a crypto ticker keyword
+         (existing heuristic — catches `btc-updown-5m-NNN` etc.)
+      2. The event carries a `crypto` / `crypto-prices` tag
+
+    Tags are checked first because they're authoritative — Polymarket
+    sets them deliberately. The keyword heuristic is the fallback for
+    older events or any tag drift.
+    """
+    if tags and tags & CRYPTO_CATEGORY_TAGS:
+        return True
     text = f"{slug} {question}".lower()
     return any(tok in text for tok in CRYPTO_TOKENS)
 
 
-def classify_event(slug: str, question: str) -> str:
+def classify_event(slug: str, question: str, tags: set[str] | None = None) -> str:
     """Return the market_type tag. For up/down markets we return the window
     string ('5m'/'15m'/'1h'/'4h'/'daily_up_down').
 
-    Polymarket's API doesn't tag these — we have to infer from slug. The
-    different slug patterns map to:
+    Polymarket DOES tag every event with the window category
+    (5M / 15M / 1H / 4h / daily / weekly / monthly / yearly). We prefer
+    those tags when available — they're authoritative. The slug-pattern
+    fallback exists for older events and any future tag drift.
 
-        '-updown-5m-NNN'                      → "5m"
-        '-updown-15m-NNN'                     → "15m"
-        '-updown-4h-NNN'                      → "4h"
-        '-up-or-down-may-23-2026-6pm-et'      → "1h"
-        '-up-or-down-on-may-18-2026'          → "daily_up_down"
-        weekly / monthly / yearly bracket     → respective bracket types
-        'will-X-hit-Y'                        → "price_target"
-        anything else                         → "other"
+    Tag → type mapping:
+        '5M' / '15M' / '1H' / '4h'           → "5m" / "15m" / "1h" / "4h"
+        'daily'                              → "daily_up_down"
+        'weekly' / 'monthly' / 'yearly'      → "weekly_bracket" / etc.
+
+    Slug pattern fallback:
+        '-updown-{N}{unit}-NNN'              → that window
+        '-up-or-down-may-23-2026-6pm-et'     → "1h"
+        '-up-or-down-on-may-18-2026'         → "daily_up_down"
+        'will-X-hit-Y'                       → "price_target"
+        anything else                        → "other"
     """
+    # ---- Pass 1: trust Polymarket's tags --------------------------------
+    if tags:
+        for tag_slug, mapped in WINDOW_TAG_TO_TYPE.items():
+            if tag_slug in tags:
+                return mapped
+
     slug_lower = slug.lower()
     text = f"{slug} {question}".lower()
 
@@ -180,20 +241,22 @@ class GammaClient:
 
     async def list_all_crypto_events(
         self,
-        max_pages: int = 60,
+        max_pages: int = 200,
         page_size: int = 100,
     ) -> list[dict[str, Any]]:
         """Paginate through Gamma's full active-events catalog and return
-        only those whose slug/title looks crypto-relevant. Polymarket has
-        ~1400 active crypto events at any moment spread across thousands
-        of total events — a single page can't possibly cover them.
+        only those whose tags / slug / title look crypto-relevant.
 
-        We stop paginating when:
-          - we receive a short page (end of catalog), or
-          - we hit `max_pages` (5000 events safety ceiling).
+        Polymarket has ~9.5k active events at any moment — the previous
+        cap of 6k (60 pages × 100) was leaving ~3.5k events undiscovered,
+        which silently dropped weekly / monthly / yearly crypto markets.
+        New cap is 20k events (200 pages); we stop early on the first
+        empty / short page.
 
-        Server-side tag filters would be cleaner but Gamma's tag system has
-        shifted ids multiple times; client-side text matching is robust.
+        We classify "crypto" via two signals:
+          1. Tags include `crypto` / `crypto-prices` / ticker tags
+             (authoritative; Polymarket sets these deliberately)
+          2. Slug/title contains a crypto ticker keyword (fallback)
         """
         seen_slugs: set[str] = set()
         matched: list[dict[str, Any]] = []
@@ -210,7 +273,8 @@ class GammaClient:
                 slug = ev.get("slug")
                 if not slug or slug in seen_slugs:
                     continue
-                if not is_crypto_event(slug, ev.get("title", "")):
+                tag_slugs = _event_tag_slugs(ev)
+                if not is_crypto_event(slug, ev.get("title", ""), tag_slugs):
                     continue
                 seen_slugs.add(slug)
                 matched.append(ev)
@@ -298,10 +362,11 @@ async def upsert_event_and_markets(
     question = event.get("title") or event.get("description") or ""
     if not slug:
         return 0
-    if not is_crypto_event(slug, question):
+    tag_slugs = _event_tag_slugs(event)
+    if not is_crypto_event(slug, question, tag_slugs):
         return 0
 
-    event_type = classify_event(slug, question)
+    event_type = classify_event(slug, question, tag_slugs)
     # Only collect tradeable Up/Down or bracket markets; "other" is noise.
     if event_type == "other":
         return 0
