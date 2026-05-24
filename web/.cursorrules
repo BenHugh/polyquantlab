@@ -1,0 +1,252 @@
+# ShipFast TypeScript SaaS Boilerplate - Cursor Rules
+
+## Project Overview
+This is a Next.js 15+ TypeScript SaaS boilerplate with Stripe payments, Supabase authentication, and modern UI components using DaisyUI/TailwindCSS v4.
+
+## Tech Stack & Dependencies
+- **Framework**: Next.js 15+ with App Router
+- **Language**: TypeScript 5.9+
+- **Database**: Supabase (PostgreSQL) with Row Level Security
+- **Authentication**: Supabase Auth with Google OAuth and Email providers
+- **Payments**: Stripe integration with webhooks
+- **Styling**: TailwindCSS 4.1+ with DaisyUI 5.0+ (CSS-first configuration)
+- **Email**: Resend for transactional emails
+- **UI Components**: Headless UI, React Hot Toast, React Tooltip
+- **Blog**: MDX support for blog content
+
+## Code Style & Conventions
+
+### TypeScript
+- Use strict TypeScript with proper typing
+- Prefer interface over type for object definitions
+- Use proper generic types for reusable components
+- Import types using `import type { }` when possible
+- Use Zod for runtime validation when needed
+- Always handle Promise types correctly (especially for Next.js 15 async APIs)
+
+### File Naming & Structure
+- Use kebab-case for file names: `button-checkout.tsx`
+- Use PascalCase for component names: `ButtonCheckout`
+- Use camelCase for functions and variables
+- API routes: `/app/api/[feature]/route.ts`
+- Components: `/components/ComponentName.tsx`
+- Pages: `/app/[route]/page.tsx`
+- Types: `/types/[feature].ts`
+- Utils/Libs: `/libs/[utility].ts`
+- Models: `/models/[ModelName].ts`
+
+### Component Architecture
+- Use functional components with hooks
+- Prefer server components by default, use "use client" only when necessary
+- Export default for main component, named exports for utilities
+- Keep components focused and single-responsibility
+- Use proper TypeScript interfaces for props
+
+### Import Order
+1. React and Next.js imports
+2. Third-party libraries
+3. Internal components (components/)
+4. Internal utilities (libs/)
+5. Internal types (types/)
+6. Config and constants
+7. Relative imports
+
+### API Routes (Next.js 15)
+- Use proper HTTP methods (GET, POST, PUT, DELETE)
+- Always validate request bodies
+- Use proper error handling with try-catch
+- Return consistent JSON responses with proper status codes
+- Use `await createClient()` for Supabase server client (async in Next.js 15)
+- Use `await headers()` and `await cookies()` for Next.js 15 compatibility
+- Handle webhook signature verification properly for Stripe
+
+### Database & Supabase
+- Use Supabase client for database operations
+- Always use `await createClient()` for server-side Supabase client
+- Use proper error handling for database operations
+- Implement Row Level Security (RLS) policies
+- Use proper session handling with Supabase Auth
+
+### Authentication (Supabase)
+- Use Supabase Auth patterns
+- Check authentication in API routes when needed
+- Use proper session handling
+- Implement proper user creation and updates
+- Handle OAuth callbacks correctly
+
+### Stripe Integration
+- Use proper webhook signature verification
+- Handle all relevant Stripe events properly
+- Update user access based on payment status
+- Use proper error handling for Stripe operations
+- Store customer and subscription data in Supabase
+
+## Next.js 15 Specific Patterns
+
+### Async APIs
+- `headers()` and `cookies()` now return Promises - always use `await`
+- `params` in dynamic routes are now Promises - use `await params`
+- Server components can be async by default
+
+### Dynamic Routes
+```typescript
+// Correct Next.js 15 pattern
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  // ... rest of component
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  // ... rest of function
+}
+```
+
+### Server Components
+- Use server components by default
+- Only add "use client" when absolutely necessary
+- Handle async operations properly in server components
+
+## Tailwind CSS v4 Specific Patterns
+
+### Configuration
+- Use CSS-first configuration in `app/globals.css` with `@theme` directive
+- No more `tailwind.config.js` file - all customization in CSS
+- Use `@import "tailwindcss"` instead of `@tailwind` directives
+- PostCSS uses `@tailwindcss/postcss` plugin
+
+### Theme Variables
+```css
+@theme {
+  --color-brand-500: #570df8;
+  --spacing-custom: 2.5rem;
+  --font-display: "Inter", sans-serif;
+}
+```
+
+### Custom Components
+```css
+@utility btn-custom {
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  background-color: var(--color-brand-500);
+}
+```
+
+### Component Patterns
+- Use DaisyUI classes for styling: `btn`, `btn-primary`, `card`, etc.
+- Implement responsive design with Tailwind breakpoints
+- Use proper semantic HTML elements
+- Include proper accessibility attributes
+
+## Supabase Patterns
+
+### Server Client
+```typescript
+import { createClient } from "@/libs/supabase/server";
+
+export default async function Page() {
+  const supabase = await createClient(); // Note: await required in Next.js 15
+  const { data: { user } } = await supabase.auth.getUser();
+  // ...
+}
+```
+
+### Client Component
+```typescript
+"use client";
+import { createClient } from "@/libs/supabase/client";
+
+export default function ClientComponent() {
+  const supabase = createClient(); // No await needed for client
+  // ...
+}
+```
+
+### Authentication Checks
+```typescript
+// Server component
+const supabase = await createClient();
+const { data: { user } } = await supabase.auth.getUser();
+
+if (!user) {
+  redirect("/signin");
+}
+```
+
+## Environment Variables
+Always use proper environment variable patterns:
+- `NEXT_PUBLIC_SUPABASE_URL` for Supabase URL
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` for Supabase anon key
+- `SUPABASE_SERVICE_ROLE_KEY` for server-side operations
+- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` for payments
+- `RESEND_API_KEY` for emails
+
+## Error Handling
+- Use try-catch blocks in API routes
+- Log errors with descriptive messages
+- Return proper HTTP status codes
+- Use toast notifications for user-facing errors
+- Handle loading states in components
+- Handle Supabase auth errors properly
+
+## Performance
+- Use Next.js Image component for images with `remotePatterns`
+- Implement proper lazy loading
+- Use proper caching strategies
+- Optimize bundle size with proper imports
+- Use server components when possible
+
+## Security
+- Validate all inputs with Zod or similar
+- Use Supabase RLS for data security
+- Verify webhook signatures (Stripe)
+- Sanitize user data
+- Use proper authentication checks
+- Never expose service role keys on client
+
+## Testing
+- Write unit tests for utility functions
+- Test API routes with proper mocking
+- Test components with React Testing Library
+- Use proper TypeScript types in tests
+
+## Commit Messages
+Use Conventional Commits format:
+- `feat:` for new features
+- `fix:` for bug fixes
+- `docs:` for documentation
+- `style:` for formatting changes
+- `refactor:` for code refactoring
+- `test:` for adding tests
+- `chore:` for maintenance tasks
+
+## Do Not
+- Don't use `any` type unless absolutely necessary
+- Don't bypass TypeScript strict mode
+- Don't forget to handle loading and error states
+- Don't hardcode configuration values
+- Don't forget to validate user inputs
+- Don't skip error handling in async operations
+- Don't use inline styles, prefer TailwindCSS classes
+- Don't create components without proper TypeScript interfaces
+- Don't forget to use `await` with Next.js 15 async APIs
+- Don't skip webhook signature verification for Stripe
+- Don't expose sensitive environment variables on client
+- Don't forget to implement RLS policies in Supabase
+
+## Migration Notes (Next.js 14 → 15)
+- Update `params` in dynamic routes to handle Promises
+- Update `headers()` and `cookies()` calls to use `await`
+- Update Supabase server client calls to use `await createClient()`
+- Update image domains to use `remotePatterns` instead of `domains`
+- Update Tailwind config from JS to CSS-first approach
+- Update DaisyUI to v5+ and handle theme changes 

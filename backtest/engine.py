@@ -1,0 +1,198 @@
+"""Backtest engine.
+
+Given (1) a universe of markets and (2) a strategy spec, replay the historical
+orderbook snapshots and simulate trades with realistic fills + fees + PnL.
+
+This is the actual product. Optimised for clarity over speed in v0 — a single
+market replays in O(N) where N is the number of snapshots, and we sequentially
+process markets. A 30-day backtest across 100 markets with 1-second snapshots
+runs in a few seconds.
+"""
+
+from __future__ import annotations
+
+import math
+from collections import deque
+from datetime import datetime
+from typing import Any
+
+import asyncpg
+from clickhouse_connect.driver.asyncclient import AsyncClient
+
+from backtest.data_loader import (
+    list_resolved_markets,
+    load_resolution,
+    load_snapshots,
+)
+from backtest.slippage import platform_fee, settlement_payoff, walk_book
+from backtest.strategies import build_strategy
+from backtest.types import (
+    BacktestResult,
+    OrderBookSnapshot,
+    Side,
+    Trade,
+)
+
+
+HISTORY_WINDOW = 60  # how many recent snapshots to keep for the strategy
+
+
+def _platform_of(market_id: str) -> str:
+    return "kalshi" if market_id.startswith("kalshi:") else "polymarket"
+
+
+def _replay_single_market(
+    snapshots: list[OrderBookSnapshot],
+    strategy,
+    resolution_at: datetime | None,
+    yes_resolved_price: float,
+) -> tuple[list[Trade], float, float]:
+    """Replay one market. Returns (trades, pnl, fees)."""
+    if not snapshots:
+        return [], 0.0, 0.0
+
+    history: deque[OrderBookSnapshot] = deque(maxlen=HISTORY_WINDOW)
+    trades: list[Trade] = []
+    open_position: tuple[Side, float, float] | None = None  # (side, avg_price, filled_usd)
+    fees_total = 0.0
+
+    # Try calling strategy with resolution_at if it accepts the kwarg
+    import inspect
+    sig = inspect.signature(strategy.func) if hasattr(strategy, "func") else None
+    pass_resolution = (
+        sig is not None and "resolution_at" in sig.parameters
+    )
+
+    for snap in snapshots:
+        history.append(snap)
+        if open_position is not None:
+            # Once we've taken a position in v0, hold to settlement.
+            # Future versions can support stop-loss / take-profit.
+            continue
+
+        try:
+            if pass_resolution:
+                # The strategy may have resolution_at baked in by build_strategy;
+                # if not, inject it here.
+                action = strategy(list(history)[:-1], snap, resolution_at=resolution_at)
+            else:
+                action = strategy(list(history)[:-1], snap)
+        except TypeError:
+            action = strategy(list(history)[:-1], snap)
+
+        if action is None:
+            continue
+
+        side, size_usd = action
+        fill = walk_book(snap, side, size_usd)
+        if fill is None:
+            continue
+        avg_price, filled_usd, slippage_bps = fill
+        platform = _platform_of(snap.market_id)
+        fee = platform_fee(platform, filled_usd)
+        fees_total += fee
+        trades.append(
+            Trade(
+                ts=snap.ts,
+                market_id=snap.market_id,
+                side=side,
+                price=avg_price,
+                size=filled_usd,
+                slippage_bps=slippage_bps,
+            )
+        )
+        open_position = (side, avg_price, filled_usd)
+
+    pnl = 0.0
+    if open_position is not None:
+        side, avg_price, filled_usd = open_position
+        pnl = settlement_payoff(side, avg_price, filled_usd, yes_resolved_price)
+    return trades, pnl, fees_total
+
+
+def _sharpe_ratio(per_market_pnls: list[float]) -> float | None:
+    if len(per_market_pnls) < 5:
+        return None
+    mean = sum(per_market_pnls) / len(per_market_pnls)
+    var = sum((p - mean) ** 2 for p in per_market_pnls) / len(per_market_pnls)
+    std = math.sqrt(var)
+    if std == 0:
+        return None
+    # Approximate annualised — without time scaling, this is per-trade Sharpe
+    return mean / std
+
+
+def _max_drawdown(per_market_pnls: list[float]) -> float:
+    peak = 0.0
+    drawdown = 0.0
+    running = 0.0
+    for pnl in per_market_pnls:
+        running += pnl
+        if running > peak:
+            peak = running
+        drawdown = min(drawdown, running - peak)
+    return drawdown
+
+
+async def run_backtest(
+    *,
+    ch: AsyncClient,
+    pg_pool: asyncpg.Pool,
+    strategy_spec: dict[str, Any],
+    event_type: str | None = None,
+    ticker: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    market_limit: int = 100,
+) -> BacktestResult:
+    """Run a strategy across all resolved markets matching the filter."""
+    strategy = build_strategy(strategy_spec)
+    universe = await list_resolved_markets(
+        pg_pool,
+        event_type=event_type,
+        ticker=ticker,
+        since=since,
+        until=until,
+        limit=market_limit,
+    )
+
+    result = BacktestResult()
+    per_market_pnls: list[float] = []
+    wins = 0
+    losses = 0
+
+    for market in universe:
+        market_id = market["market_id"]
+        resolution = await load_resolution(pg_pool, market_id)
+        if resolution is None:
+            continue
+        # Backtest the snapshots up to the resolution time
+        market_start = since or (resolution.resolved_at.replace(hour=0, minute=0))
+        snapshots = await load_snapshots(
+            ch,
+            market_id=market_id,
+            start=market_start,
+            end=resolution.resolved_at,
+        )
+        if not snapshots:
+            continue
+
+        trades, pnl, fees = _replay_single_market(
+            snapshots, strategy, market["resolution_at"], resolution.outcome_yes_price
+        )
+        if trades:
+            result.trades.extend(trades)
+            result.total_pnl += pnl
+            result.total_fees += fees
+            per_market_pnls.append(pnl - fees)
+            result.n_markets += 1
+            if pnl > fees:
+                wins += 1
+            else:
+                losses += 1
+
+    if wins + losses > 0:
+        result.win_rate = wins / (wins + losses)
+    result.sharpe = _sharpe_ratio(per_market_pnls)
+    result.max_drawdown = _max_drawdown(per_market_pnls)
+    return result
