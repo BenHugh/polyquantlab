@@ -47,16 +47,36 @@ log = get_logger(__name__)
 # resolution windows.
 # ---------------------------------------------------------------------------
 
-DAILY_UP_DOWN_RE = re.compile(r"(up|down).*\bon\b.*\d{4}", re.IGNORECASE)
-UP_OR_DOWN_RE = re.compile(r"up\s*or\s*down|will\s+\w+\s+(go\s+)?(up|down)", re.IGNORECASE)
 CRYPTO_TOKENS = ("btc", "bitcoin", "eth", "ethereum", "sol", "solana")
 
-# Polymarket up/down market slug pattern. Examples:
-#   sol-updown-5m-1768913100
-#   btc-updown-15m-1770138000
-#   eth-updown-1h-1770138000
-# Captures the window duration (5m, 15m, 1h, 4h, 24h, 1d).
+# Polymarket up/down market slug patterns. Polymarket uses two distinct
+# conventions for crypto Up/Down markets:
+#
+#   1. Short-window markets (5m / 15m / 4h) — slug template:
+#        {ticker}-updown-{window}-{unix_ts}
+#      e.g. btc-updown-5m-1768913100, eth-updown-4h-1770138000
+#
+#   2. Hourly markets — slug template:
+#        {ticker_full}-up-or-down-{month}-{day}-{year}-{hour}{am|pm}-et
+#      e.g. bitcoin-up-or-down-may-23-2026-6pm-et
+#      Each hour of the day produces one market.
+#
+#   3. Pure-daily markets — slug template:
+#        {ticker_full}-up-or-down-on-{month}-{day}-{year}
+#      e.g. solana-up-or-down-on-may-18-2026
+#      One per day, settles end-of-day.
+#
+# The "left sidebar" on Polymarket's crypto page exposes 5m/15m/1h/4h/daily
+# but they share only the FIRST pattern for the short windows; 1h and
+# daily come through the natural-language pattern. The regex below
+# differentiates them.
 UPDOWN_SLUG_RE = re.compile(r"-updown-(\d+[mhd])-\d+", re.IGNORECASE)
+HOURLY_NATURAL_RE = re.compile(
+    r"-up-or-down-[a-z]+-\d+-\d{4}-\d+(am|pm)-et$", re.IGNORECASE
+)
+DAILY_NATURAL_RE = re.compile(
+    r"-up-or-down-on-[a-z]+-\d+-\d{4}$", re.IGNORECASE
+)
 
 
 def is_crypto_event(slug: str, question: str) -> bool:
@@ -66,25 +86,52 @@ def is_crypto_event(slug: str, question: str) -> bool:
 
 def classify_event(slug: str, question: str) -> str:
     """Return the market_type tag. For up/down markets we return the window
-    string ('5m'/'15m'/'1h'/'4h'/'24h') — same vocabulary PolyBackTest uses
-    in their metadata response. Bracket / range / target markets get their
-    own labels.
+    string ('5m'/'15m'/'1h'/'4h'/'daily_up_down').
+
+    Polymarket's API doesn't tag these — we have to infer from slug. The
+    different slug patterns map to:
+
+        '-updown-5m-NNN'                      → "5m"
+        '-updown-15m-NNN'                     → "15m"
+        '-updown-4h-NNN'                      → "4h"
+        '-up-or-down-may-23-2026-6pm-et'      → "1h"
+        '-up-or-down-on-may-18-2026'          → "daily_up_down"
+        weekly / monthly / yearly bracket     → respective bracket types
+        'will-X-hit-Y'                        → "price_target"
+        anything else                         → "other"
     """
+    slug_lower = slug.lower()
     text = f"{slug} {question}".lower()
-    # Up/Down with explicit window in slug — most common case.
-    m = UPDOWN_SLUG_RE.search(text)
+
+    # Short-window Up/Down with structured slug (most common).
+    m = UPDOWN_SLUG_RE.search(slug_lower)
     if m:
         window = m.group(1).lower()
-        # Normalise 1d → 24h to match PolyBackTest's vocabulary.
+        # Note: -updown-1d- is theoretically possible but we haven't
+        # observed it in production — daily markets use pattern #3.
         return "24h" if window == "1d" else window
-    # Bracket / range markets
+
+    # 1-hour markets — natural-language slug with explicit hour.
+    if HOURLY_NATURAL_RE.search(slug_lower):
+        return "1h"
+
+    # Pure-daily — natural-language slug WITHOUT an hour suffix.
+    if DAILY_NATURAL_RE.search(slug_lower):
+        return "daily_up_down"
+
+    # Bracket / range markets (weekly / monthly / yearly windows).
+    # Polymarket exposes nav links for these but the active set is
+    # currently small; we still tag them in case some appear.
     if "weekly" in text or "this week" in text:
         return "weekly_bracket"
     if "monthly" in text or "this month" in text:
         return "monthly_bracket"
-    # Fall-throughs
-    if DAILY_UP_DOWN_RE.search(text) or UP_OR_DOWN_RE.search(text):
-        return "daily_up_down"
+    if "yearly" in text or "this year" in text:
+        return "yearly_bracket"
+
+    # Generic catch-alls
+    if re.search(r"up\s*or\s*down|will\s+\w+\s+(go\s+)?(up|down)", text):
+        return "daily_up_down"  # last-resort bucket for atypical Up/Down phrasing
     if re.search(r"\bhit\b|\breach\b|\bclose\s+(above|below)\b", text):
         return "price_target"
     return "other"

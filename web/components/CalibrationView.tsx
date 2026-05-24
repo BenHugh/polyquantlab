@@ -35,14 +35,14 @@ interface CalibrationResponse {
 
 const TICKERS = ["ALL", "BTC", "ETH", "SOL"] as const;
 // Must match the strings actually written by the collector into
-// `events.event_type` — see components/MarketsTable.tsx for the same
-// list and the rationale (Polymarket doesn't publish 1h or 24h crypto
-// Up/Down markets; the daily ones are stored as `daily_up_down`).
-const EVENT_TYPES = ["ALL", "5m", "15m", "4h", "daily_up_down"] as const;
+// `events.event_type`. 1h markets come through a different slug pattern
+// than 5m/15m/4h (see collector/discovery.py:classify_event).
+const EVENT_TYPES = ["ALL", "5m", "15m", "1h", "4h", "daily_up_down"] as const;
 const EVENT_TYPE_LABELS: Record<(typeof EVENT_TYPES)[number], string> = {
   ALL: "ALL",
   "5m": "5m",
   "15m": "15m",
+  "1h": "1h",
   "4h": "4h",
   daily_up_down: "Daily",
 };
