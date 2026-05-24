@@ -49,23 +49,28 @@ log = get_logger(__name__)
 
 CRYPTO_TOKENS = ("btc", "bitcoin", "eth", "ethereum", "sol", "solana")
 
-# Polymarket tags Gamma sets on every event. These are the source of
-# truth for "what kind of market this is" — much more reliable than
-# our previous slug-pattern guessing. We index these tags into:
-#   - event_type (the window: 5m / 15m / 1h / 4h / daily / weekly / monthly / yearly)
-#   - is_crypto  (whether the event is in a crypto category at all)
+# Polymarket tags Gamma sets on every event. We use them as the
+# authoritative source for "which time window this Up/Down market is".
+#
+# Scope (intentional, matches PolyBackTest):
+#   - ONLY binary Up/Down crypto markets (5m / 15m / 1h / 4h / daily)
+#   - NOT collected: weekly / monthly / yearly bracket markets (multiple
+#     price thresholds per event — 10-34 sub-markets each — different
+#     backtest math, not what our quant-focused customer base buys)
+#   - NOT collected: "What price will X hit" daily targets — same
+#     reason as brackets
+#
+# If you ever want to expand scope, add the tag → type mapping here and
+# the bracket-aware backtest primitives in backtest/strategies.py.
 WINDOW_TAG_TO_TYPE: dict[str, str] = {
     "5m": "5m",
     "15m": "15m",
     "1h": "1h",
     "4h": "4h",
     "daily": "daily_up_down",
-    "weekly": "weekly_bracket",
-    "monthly": "monthly_bracket",
-    "yearly": "yearly_bracket",
 }
 CRYPTO_CATEGORY_TAGS = {"crypto", "crypto-prices", "bitcoin", "ethereum",
-                        "solana", "xrp", "ripple", "dogecoin", "bnb", "hype"}
+                        "solana"}
 
 
 def _event_tag_slugs(event: dict[str, Any]) -> set[str]:
@@ -180,21 +185,17 @@ def classify_event(slug: str, question: str, tags: set[str] | None = None) -> st
     if DAILY_NATURAL_RE.search(slug_lower):
         return "daily_up_down"
 
-    # Bracket / range markets (weekly / monthly / yearly windows).
-    # Polymarket exposes nav links for these but the active set is
-    # currently small; we still tag them in case some appear.
-    if "weekly" in text or "this week" in text:
-        return "weekly_bracket"
-    if "monthly" in text or "this month" in text:
-        return "monthly_bracket"
-    if "yearly" in text or "this year" in text:
-        return "yearly_bracket"
+    # Bracket / price-target markets are intentionally OUT OF SCOPE.
+    # They have a different shape (multiple sub-markets per event,
+    # different backtest math) and PolyBackTest doesn't cover them
+    # either. We return "other" so upsert_event_and_markets drops them.
+    # Keep these comments here so the choice is visible at the only
+    # place that would naturally re-introduce them.
 
-    # Generic catch-alls
+    # Generic catch-all for atypical Up/Down phrasing (e.g. an event
+    # tagged "daily" but with a non-standard slug).
     if re.search(r"up\s*or\s*down|will\s+\w+\s+(go\s+)?(up|down)", text):
-        return "daily_up_down"  # last-resort bucket for atypical Up/Down phrasing
-    if re.search(r"\bhit\b|\breach\b|\bclose\s+(above|below)\b", text):
-        return "price_target"
+        return "daily_up_down"
     return "other"
 
 

@@ -39,15 +39,10 @@ export interface ResolvedMarket {
 const TICKERS = ["ALL", "BTC", "ETH", "SOL"] as const;
 type TickerFilter = (typeof TICKERS)[number];
 
-// event_type vocabulary matches what the collector actually stores in
-// the events table. Up/Down markets (binary): 5m/15m/1h/4h/daily.
-// Bracket markets (multi-price): weekly/monthly/yearly. See
-// collector/discovery.py:WINDOW_TAG_TO_TYPE for the source-of-truth
-// mapping.
-const EVENT_TYPES = [
-  "ALL", "5m", "15m", "1h", "4h", "daily_up_down",
-  "weekly_bracket", "monthly_bracket", "yearly_bracket",
-] as const;
+// Up/Down binary markets only (intentional product scope — matches
+// PolyBackTest). Bracket / price-target markets are NOT collected;
+// see collector/discovery.py:WINDOW_TAG_TO_TYPE for rationale.
+const EVENT_TYPES = ["ALL", "5m", "15m", "1h", "4h", "daily_up_down"] as const;
 type EventTypeFilter = (typeof EVENT_TYPES)[number];
 
 const EVENT_TYPE_LABELS: Record<EventTypeFilter, string> = {
@@ -57,9 +52,6 @@ const EVENT_TYPE_LABELS: Record<EventTypeFilter, string> = {
   "1h": "1h",
   "4h": "4h",
   daily_up_down: "Daily",
-  weekly_bracket: "Weekly",
-  monthly_bracket: "Monthly",
-  yearly_bracket: "Yearly",
 };
 
 export default function MarketsTable({
