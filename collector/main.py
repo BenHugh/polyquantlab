@@ -26,6 +26,7 @@ from collector.db import make_clickhouse, make_postgres_pool
 from collector.discovery import run_discovery_forever
 from collector.logging_setup import get_logger, setup_logging
 from collector.polymarket_ws import PolymarketWS, UnderlyingPriceCache
+from collector.reclassify import run_reclassify_forever
 from collector.resolution_sync import run_resolution_sync_forever
 
 log = get_logger(__name__)
@@ -64,6 +65,13 @@ async def main() -> None:
         asyncio.create_task(run_discovery_forever(settings, pool), name="discovery"),
         asyncio.create_task(
             run_resolution_sync_forever(settings, pool), name="resolution_sync"
+        ),
+        # Hourly self-audit: catches event_type drift after any classifier
+        # change. Cheap (~3k row read + tiny UPDATE batch) and protects
+        # us from the kind of silent mislabeling we hit with 1h markets.
+        # See collector/reclassify.py for rationale.
+        asyncio.create_task(
+            run_reclassify_forever(pool, interval_s=3600), name="reclassify"
         ),
         asyncio.create_task(binance.run(), name="binance_ws"),
         asyncio.create_task(binance_trades.run(), name="binance_trades_ws"),
