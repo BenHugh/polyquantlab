@@ -171,7 +171,14 @@ def _sharpe_ratio(per_market_pnls: list[float]) -> float | None:
     mean = sum(per_market_pnls) / len(per_market_pnls)
     var = sum((p - mean) ** 2 for p in per_market_pnls) / len(per_market_pnls)
     std = math.sqrt(var)
-    if std == 0:
+    # Floating-point safe "is std basically zero?" check. When every
+    # per-market PnL is identical (e.g. 178 trades all = −$10), the
+    # mathematical std is exactly 0, but accumulated FP error makes it
+    # come out as something like 1e-15. Without this epsilon the next
+    # line divides by ~zero and we get nonsense like -7.5e16. Threshold
+    # is set well above typical FP noise but below any realistic real
+    # std (PnLs are USD with 2 decimals; std < 1e-6 means everyone agrees).
+    if std < 1e-6:
         return None
     # Approximate annualised — without time scaling, this is per-trade Sharpe
     return mean / std
