@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     closed_at             TIMESTAMPTZ,
     resolution_yes_price  NUMERIC(4, 3),
     pnl                   NUMERIC(12, 2),
+    underlying_price      NUMERIC(20, 8),
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

@@ -139,7 +139,10 @@ def _replay_single_market(
             continue
         avg_price, filled_usd, slippage_bps = fill
         platform = _platform_of(snap.market_id)
-        fee = platform_fee(platform, filled_usd)
+        # Price-dependent fee: see backtest/slippage.py for the formula.
+        # Pass avg_price so a fill near the extremes (cheap) pays less
+        # than a fill near 50¢ (where the fee is highest).
+        fee = platform_fee(platform, filled_usd, avg_price)
         fees_total += fee
         trades.append(
             Trade(
@@ -150,6 +153,10 @@ def _replay_single_market(
                 size=filled_usd,
                 slippage_bps=slippage_bps,
                 fees=fee,
+                # Snapshot underlying price at the moment of fill. Lets the
+                # dashboard show "BTC was at $67,500 when this trade fired"
+                # alongside the Polymarket fill price.
+                underlying_price=snap.underlying_price,
             )
         )
         open_position = (side, avg_price, filled_usd)

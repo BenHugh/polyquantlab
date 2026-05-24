@@ -28,6 +28,11 @@ interface Trade {
   pnl?: number | null;
   fees?: number;
   resolution_yes_price?: number | null;
+  // Underlying spot price (BTC/ETH/SOL) at the moment of fill. Lets the
+  // user see "what was BTC doing when this trade fired?" without
+  // jumping back to the market detail page. Populated by the engine
+  // since Phase J.
+  underlying_price?: number | null;
 }
 
 interface BacktestResultBody {
@@ -393,14 +398,16 @@ function TradesTable({ trades }: { trades: Trade[] }) {
             <th>Side</th>
             <th className="text-right">Fill price</th>
             <th className="text-right">Size</th>
-            <th className="text-right">Slippage (bps)</th>
+            <th className="text-right">Underlying $</th>
+            <th className="text-right">Slip (bps)</th>
+            <th className="text-right">Fees</th>
             <th className="text-right">Net P&L</th>
           </tr>
         </thead>
         <tbody>
           {trades.length === 0 && (
             <tr>
-              <td colSpan={7} className="text-center opacity-60 py-6">
+              <td colSpan={9} className="text-center opacity-60 py-6">
                 Strategy didn&apos;t fire any trades.
               </td>
             </tr>
@@ -429,8 +436,16 @@ function TradesTable({ trades }: { trades: Trade[] }) {
                 <td className="text-right tabular-nums">
                   ${t.size.toFixed(2)}
                 </td>
+                <td className="text-right tabular-nums opacity-80">
+                  {typeof t.underlying_price === "number"
+                    ? `$${formatPx(t.underlying_price)}`
+                    : "—"}
+                </td>
                 <td className="text-right tabular-nums">
                   {t.slippage_bps.toFixed(1)}
+                </td>
+                <td className="text-right tabular-nums opacity-70">
+                  {fees > 0 ? `$${fees.toFixed(3)}` : "$0"}
                 </td>
                 <td
                   className={`text-right tabular-nums ${
@@ -488,3 +503,11 @@ function ParamsCard({ params }: { params: Record<string, unknown> }) {
 // identical strings (avoids hydration mismatch). Re-export under the
 // local name so existing call sites don't change.
 const formatDate = formatDateTime;
+
+function formatPx(n: number): string {
+  // Spot prices: BTC at $60k+, ETH at $2-4k, SOL at $100-300. Pick a
+  // sensible number of decimals so column widths stay reasonable.
+  if (n >= 1000) return n.toFixed(0);
+  if (n >= 1) return n.toFixed(2);
+  return n.toFixed(4);
+}

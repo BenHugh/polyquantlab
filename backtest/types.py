@@ -69,6 +69,12 @@ class Trade:
     pnl: float | None = None      # gross P&L (excl. fees); None until settled
     fees: float = 0.0             # platform fee paid for this fill
     resolution_yes_price: float | None = None  # 1.0 or 0.0 once known
+    # Underlying spot price (BTC/ETH/SOL) at the moment of fill, captured
+    # from the snapshot's `underlying_price` field. Used by the dashboard
+    # to overlay "what was BTC doing when this trade fired?" alongside
+    # the Polymarket fill — context that's critical for diagnosing
+    # whether a strategy reacted to a real underlying move or to noise.
+    underlying_price: float | None = None
 
 
 @dataclass
@@ -94,6 +100,7 @@ class BacktestResult:
                     "pnl": t.pnl,
                     "fees": t.fees,
                     "resolution_yes_price": t.resolution_yes_price,
+                    "underlying_price": t.underlying_price,
                 }
                 for t in self.trades
             ],

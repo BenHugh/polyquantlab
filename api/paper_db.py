@@ -172,19 +172,24 @@ async def open_position(
     size_usd: float,
     slippage_bps: float,
     fees: float,
+    underlying_price: float | None = None,
 ) -> bool:
     """Insert a virtual trade. Uses ON CONFLICT to gracefully handle the
     case where the worker tries to open twice on the same market (e.g.
     two near-simultaneous snapshots both triggering the strategy).
     Returns True if a new row was inserted, False if the unique-key
     blocked it.
+
+    `underlying_price` captures the BTC/ETH/SOL spot price at the
+    moment of trigger so the dashboard can show context next to each
+    fill (added in Phase J).
     """
     result = await pool.execute(
         """
         INSERT INTO paper_positions (
             paper_strategy_id, market_id, side,
-            fill_price, size_usd, slippage_bps, fees
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            fill_price, size_usd, slippage_bps, fees, underlying_price
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (paper_strategy_id, market_id) DO NOTHING
         """,
         strategy_id,
@@ -194,6 +199,7 @@ async def open_position(
         size_usd,
         slippage_bps,
         fees,
+        underlying_price,
     )
     return result.endswith(" 1")
 
@@ -258,7 +264,8 @@ async def list_positions(
         """
         SELECT p.paper_position_id, p.market_id, p.side, p.fill_price,
                p.size_usd, p.slippage_bps, p.fees, p.opened_at,
-               p.closed_at, p.resolution_yes_price, p.pnl
+               p.closed_at, p.resolution_yes_price, p.pnl,
+               p.underlying_price
           FROM paper_positions p
           JOIN paper_strategies s ON s.paper_strategy_id = p.paper_strategy_id
          WHERE p.paper_strategy_id = $1 AND s.user_email = $2
@@ -327,7 +334,7 @@ def _position_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
     d["paper_position_id"] = str(d["paper_position_id"])
     for k in ("fill_price", "size_usd", "slippage_bps", "fees", "pnl",
-              "resolution_yes_price"):
+              "resolution_yes_price", "underlying_price"):
         if d.get(k) is not None:
             d[k] = float(d[k])
     for k in ("opened_at", "closed_at"):

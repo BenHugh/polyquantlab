@@ -28,6 +28,10 @@ interface Position {
   closed_at: string | null;
   resolution_yes_price: number | null;
   pnl: number | null;
+  // BTC/ETH/SOL spot price at the moment of fill, captured from the
+  // snapshot at trigger time. Lets the user see context next to the
+  // Polymarket fill without jumping to another page.
+  underlying_price?: number | null;
 }
 
 interface EquityPoint {
@@ -152,6 +156,7 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
                 <th>Side</th>
                 <th className="text-right">Fill</th>
                 <th className="text-right">Size</th>
+                <th className="text-right">Underlying $</th>
                 <th>Closed</th>
                 <th className="text-right">Net P&L</th>
               </tr>
@@ -159,7 +164,7 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
             <tbody>
               {positions.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="text-center py-6 opacity-60">
+                  <td colSpan={8} className="text-center py-6 opacity-60">
                     No virtual trades yet — strategy hasn&apos;t fired since it started.
                   </td>
                 </tr>
@@ -184,6 +189,11 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
                     </td>
                     <td className="text-right tabular-nums">{(p.fill_price * 100).toFixed(2)}¢</td>
                     <td className="text-right tabular-nums">${p.size_usd.toFixed(2)}</td>
+                    <td className="text-right tabular-nums opacity-80">
+                      {typeof p.underlying_price === "number"
+                        ? `$${p.underlying_price >= 1000 ? p.underlying_price.toFixed(0) : p.underlying_price.toFixed(2)}`
+                        : "—"}
+                    </td>
                     <td className="whitespace-nowrap text-xs">
                       {p.closed_at ? formatDateTime(p.closed_at) : <span className="opacity-50">open</span>}
                     </td>

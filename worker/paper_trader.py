@@ -278,7 +278,8 @@ async def _open_positions_for_new_snapshots(
             if fill is None:
                 continue
             avg_price, filled_usd, slippage_bps = fill
-            fee = platform_fee("polymarket", filled_usd)
+            # Price-dependent fee — same formula as the backtest engine.
+            fee = platform_fee("polymarket", filled_usd, avg_price)
             inserted = await paper_db.open_position(
                 pool,
                 strategy_id=ctx["paper_strategy_id"],
@@ -288,6 +289,12 @@ async def _open_positions_for_new_snapshots(
                 size_usd=float(filled_usd),
                 slippage_bps=float(slippage_bps),
                 fees=float(fee),
+                # Capture underlying spot at trigger time (added in Phase J)
+                underlying_price=(
+                    float(snap.underlying_price)
+                    if snap.underlying_price is not None
+                    else None
+                ),
             )
             if inserted:
                 opened += 1

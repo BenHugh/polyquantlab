@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     resolution_yes_price  NUMERIC(4, 3),    -- 1.000 = Up won, 0.000 = Down won
     pnl                   NUMERIC(12, 2),   -- gross (before fees)
 
+    -- Underlying spot price at fill (BTC/ETH/SOL). Captured from the
+    -- snapshot at trigger time so we can show "what was BTC doing
+    -- when this fired?" alongside the Polymarket fill. NULL if the
+    -- snapshot didn't carry an underlying tick.
+    underlying_price      NUMERIC(20, 8),
+
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
