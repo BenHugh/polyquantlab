@@ -206,7 +206,13 @@ export async function fastapiProxy(
       headers: extraHeaders,
     });
     const text = await res.text();
-    return new Response(text, {
+    // The Response constructor REJECTS any body (even empty string) on
+    // statuses 101 / 204 / 205 / 304. FastAPI uses 204 for DELETE, so
+    // we have to pass `null` in those cases or the proxy throws and
+    // surfaces as a misleading 502.
+    const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
+    const responseBody = NULL_BODY_STATUS.has(res.status) ? null : text;
+    return new Response(responseBody, {
       status: res.status,
       headers: {
         "Content-Type": res.headers.get("Content-Type") || "application/json",

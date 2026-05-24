@@ -174,7 +174,7 @@ export default function NewPaperStrategyForm() {
               options={[{ value: "below", label: "Below" }, { value: "above", label: "Above" }]}
               onChange={(v) => setDirection(v as typeof direction)} />
             <SelectField label="Side" value={side}
-              options={[{ value: "buy_yes", label: "Buy Up" }, { value: "buy_no", label: "Buy Down" }]}
+              options={[{ value: "buy_yes", label: "Buy Up (buy_yes)" }, { value: "buy_no", label: "Buy Down (buy_no)" }]}
               onChange={(v) => setSide(v as typeof side)} />
           </div>
         )}
@@ -189,7 +189,7 @@ export default function NewPaperStrategyForm() {
             <NumberField label="Minutes before" value={minutesBefore} step={5} min={1} onChange={setMinutesBefore} />
             <NumberField label="Window ± min" value={minutesWindow} step={1} min={0} onChange={setMinutesWindow} />
             <SelectField label="Side" value={side}
-              options={[{ value: "buy_yes", label: "Buy Up" }, { value: "buy_no", label: "Buy Down" }]}
+              options={[{ value: "buy_yes", label: "Buy Up (buy_yes)" }, { value: "buy_no", label: "Buy Down (buy_no)" }]}
               onChange={(v) => setSide(v as typeof side)} />
           </div>
         )}
