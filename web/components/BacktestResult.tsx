@@ -54,7 +54,10 @@ interface JobRecord {
 }
 
 const POLL_MS = 1200;
-const GIVE_UP_MS = 90_000;
+// 6 min: backend ARQ job_timeout is 300s (5 min); we give an extra minute
+// of buffer so a slow-but-still-running job doesn't get the "stuck"
+// banner before the worker has had a chance to mark it timed-out.
+const GIVE_UP_MS = 360_000;
 
 export default function BacktestResult({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<JobRecord | null>(null);

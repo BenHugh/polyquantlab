@@ -12,6 +12,7 @@ Or via systemd (see deploy/05_install_worker.sh).
 
 from __future__ import annotations
 
+import asyncio
 import traceback
 from datetime import datetime
 from typing import Any
@@ -89,6 +90,22 @@ async def run_backtest_job(
             pnl=payload.get("total_pnl"),
         )
         return payload
+    except asyncio.CancelledError:
+        # ARQ raises CancelledError (not TimeoutError) inside the
+        # coroutine when job_timeout fires. CancelledError is a
+        # BaseException in modern Python so a bare `except Exception`
+        # wouldn't catch it — the JobStore would be left at "running"
+        # forever, and the dashboard would spin until its own poll
+        # timeout. Mark it explicitly so the user sees a clear failure
+        # right away, then re-raise so ARQ's accounting stays correct.
+        await store.mark_failed(
+            job_id,
+            "TimeoutError: backtest exceeded the worker time limit "
+            f"({WORKER_JOB_TIMEOUT_S}s). Reduce market_limit, narrow the "
+            "time window, or contact support.",
+        )
+        log.error("backtest_timed_out", job_id=job_id)
+        raise
     except Exception as exc:  # noqa: BLE001 — surface anything to caller
         # Keep the trace in the API's reach so devs can diagnose, but
         # truncate so we don't bloat Redis. Real fixes go via logs.
@@ -117,6 +134,16 @@ def _redis_settings_from_url(url: str) -> RedisSettings:
     )
 
 
+# Centralised so the timeout copy in the error message stays in sync.
+# 300s = 5 min covers a Premium-tier 200-market backtest with room. Real
+# CPU work per market is ~200ms, so 200 markets in serial ≈ 40s, and
+# ClickHouse fan-out parallelism inside the engine brings it closer to
+# 10-15s in practice. The 5-min cap is there to catch genuinely
+# pathological strategies (infinite loops, hung HTTP), not the steady
+# state.
+WORKER_JOB_TIMEOUT_S = 300
+
+
 class WorkerSettings:
     functions = [run_backtest_job]
     on_startup = startup
@@ -127,6 +154,6 @@ class WorkerSettings:
     # If CPU becomes the bottleneck later we add more worker processes
     # (systemd template unit) instead of cranking this higher.
     max_jobs = 6
-    job_timeout = 30  # seconds — kill any backtest that runs longer
+    job_timeout = WORKER_JOB_TIMEOUT_S
     keep_result = 0   # we persist results in our own JobStore, not ARQ's
     redis_settings = _redis_settings_from_url(get_settings().redis_url)
