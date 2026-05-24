@@ -15,7 +15,7 @@
  * commas / quotes / newlines.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface ExportButtonsProps {
   /** Rows to export. Each row is a flat (or near-flat) object. */
@@ -51,24 +51,64 @@ export default function ExportButtons({
     setOpen(false);
   }
 
+  // DaisyUI's .dropdown class hides .dropdown-content via CSS unless the
+  // parent has :focus-within OR carries the `dropdown-open` class. Our
+  // React state controls visibility independently, but the CSS was
+  // still hiding the menu (visibility: hidden + opacity: 0). Two fixes
+  // applied below:
+  //   1. Use plain `relative` positioning instead of DaisyUI's dropdown
+  //      utility, so no CSS hides the menu when we render it.
+  //   2. Close on outside-click via a document-level pointerdown handler
+  //      so the menu doesn't stick open forever when the user clicks
+  //      elsewhere.
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: PointerEvent) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
   return (
-    <div className={`dropdown dropdown-end ${className ?? ""}`}>
+    <div
+      ref={containerRef}
+      className={`relative inline-block ${className ?? ""}`}
+    >
       <button
+        type="button"
         className="btn btn-xs btn-outline"
         disabled={disabled}
-        onClick={() => setOpen(!open)}
+        onClick={() => setOpen((v) => !v)}
       >
         Export ⇣
       </button>
       {open && (
-        <ul className="dropdown-content menu z-10 mt-1 p-1 shadow bg-base-100 border border-base-300 rounded-box w-32">
+        <ul
+          className="absolute right-0 mt-1 z-50 p-1 shadow-lg bg-base-100 border border-base-300 rounded-box w-32 menu menu-sm"
+          role="menu"
+        >
           <li>
-            <button onClick={() => trigger("csv")} className="text-sm">
+            <button
+              type="button"
+              onClick={() => trigger("csv")}
+              className="text-sm"
+            >
               CSV
             </button>
           </li>
           <li>
-            <button onClick={() => trigger("json")} className="text-sm">
+            <button
+              type="button"
+              onClick={() => trigger("json")}
+              className="text-sm"
+            >
               JSON
             </button>
           </li>

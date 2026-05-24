@@ -227,6 +227,16 @@ async def get_resolved_markets(
     since: datetime | None = Query(default=None),
     until: datetime | None = Query(default=None),
     limit: int = Query(default=100, le=1000),
+    with_underlying: bool = Query(
+        default=False,
+        description=(
+            "Enrich each row with `underlying_start`, `underlying_end`, "
+            "and `underlying_delta_pct` (= (end-start)/start * 100). "
+            "Costs ~10ms × N markets of additional ClickHouse work, so "
+            "off by default — UI calls it explicitly when surfacing "
+            "the column."
+        ),
+    ),
     _: dict = Depends(authed_key),
 ) -> dict[str, Any]:
     pool = request.app.state.pg
@@ -238,6 +248,40 @@ async def get_resolved_markets(
         until=until,
         limit=limit,
     )
+
+    if with_underlying and markets:
+        ch: AsyncClient = request.app.state.ch
+        # Fan out per-market price lookups concurrently. Each market
+        # needs two lookups (start + end); we cap concurrency to keep
+        # ClickHouse happy on a small VPS.
+        import asyncio
+        sem = asyncio.Semaphore(40)
+
+        async def _enrich(m: dict[str, Any]) -> None:
+            ticker = m.get("ticker")
+            # `created_at` from Postgres is the market start; `resolution_at`
+            # is the planned end. We use resolved_at if present, falling
+            # back to resolution_at.
+            start_ts = m.get("created_at")
+            end_ts = m.get("resolved_at") or m.get("resolution_at")
+            if not (ticker and start_ts and end_ts):
+                return
+            async with sem:
+                start_price, end_price = await asyncio.gather(
+                    _underlying_price_at(ch, ticker, start_ts),
+                    _underlying_price_at(ch, ticker, end_ts),
+                )
+            m["underlying_start"] = start_price
+            m["underlying_end"] = end_price
+            if start_price and end_price and start_price > 0:
+                m["underlying_delta_pct"] = (
+                    (end_price - start_price) / start_price * 100.0
+                )
+            else:
+                m["underlying_delta_pct"] = None
+
+        await asyncio.gather(*[_enrich(m) for m in markets])
+
     return {"markets": markets, "count": len(markets)}
 
 

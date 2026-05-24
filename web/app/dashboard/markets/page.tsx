@@ -30,12 +30,13 @@ export default async function MarketsPage() {
   let markets: ResolvedMarket[] = [];
   let fetchError: string | null = null;
   try {
-    // Pull the 500 most-recent resolved markets. 5-minute Up/Down events
-    // resolve at ~36/hour (3 tickers × 12), so 500 ≈ 14 hours of history —
-    // enough for most browsing. The single-market detail page is the
-    // place for deep historical analysis.
+    // Pull the 500 most-recent resolved markets WITH underlying price
+    // enrichment so the table can show "BTC moved X% during this
+    // market". 5-minute Up/Down events resolve at ~36/hour, so 500 ≈
+    // 14 hours of history. The underlying lookup adds ~5s server-side
+    // for 500 markets — fine for a list view that loads once.
     const data = await fastapiGet<ResolvedMarketsResponse>(
-      "/v1/markets/resolved?limit=500"
+      "/v1/markets/resolved?limit=500&with_underlying=true"
     );
     markets = data.markets ?? [];
   } catch (e: any) {

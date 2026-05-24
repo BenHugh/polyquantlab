@@ -34,6 +34,11 @@ export interface ResolvedMarket {
   resolved_at?: string | null;
   final_volume?: number | null;
   final_liquidity?: number | null;
+  // Optional underlying-price enrichment (when ?with_underlying=true).
+  // `underlying_delta_pct` = (end-start)/start × 100, in percent.
+  underlying_start?: number | null;
+  underlying_end?: number | null;
+  underlying_delta_pct?: number | null;
 }
 
 const TICKERS = ["ALL", "BTC", "ETH", "SOL"] as const;
@@ -87,7 +92,10 @@ export default function MarketsTable({
     async function load() {
       setLoading(true);
       try {
-        const qs = new URLSearchParams({ limit: "500" });
+        const qs = new URLSearchParams({
+          limit: "500",
+          with_underlying: "true",
+        });
         if (ticker !== "ALL") qs.set("ticker", ticker);
         if (eventType !== "ALL") qs.set("event_type", eventType);
         const res = await fetch(`/api/markets?${qs.toString()}`, {
@@ -179,6 +187,7 @@ export default function MarketsTable({
               <th>Window</th>
               <th>Resolved</th>
               <th>Winner</th>
+              <th className="text-right">Underlying Δ</th>
               <th></th>
             </tr>
           </thead>
@@ -192,7 +201,7 @@ export default function MarketsTable({
             )}
             {!loading && visible.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center py-8 opacity-60">
+                <td colSpan={7} className="text-center py-8 opacity-60">
                   {search
                     ? `No markets match "${search}". Try widening filters or clearing the search.`
                     : "No resolved markets yet for this filter."}
@@ -248,6 +257,27 @@ export default function MarketsTable({
                       {!winner && (
                         <span className="badge badge-ghost">—</span>
                       )}
+                    </td>
+                    <td
+                      className={`text-right tabular-nums ${
+                        typeof m.underlying_delta_pct !== "number"
+                          ? "opacity-50"
+                          : m.underlying_delta_pct > 0
+                            ? "text-success"
+                            : m.underlying_delta_pct < 0
+                              ? "text-error"
+                              : ""
+                      }`}
+                      title={
+                        typeof m.underlying_start === "number" &&
+                        typeof m.underlying_end === "number"
+                          ? `${m.ticker} $${m.underlying_start.toFixed(2)} → $${m.underlying_end.toFixed(2)}`
+                          : "No underlying data in this window"
+                      }
+                    >
+                      {typeof m.underlying_delta_pct === "number"
+                        ? `${m.underlying_delta_pct >= 0 ? "+" : ""}${m.underlying_delta_pct.toFixed(2)}%`
+                        : "—"}
                     </td>
                     <td>
                       <Link

@@ -146,6 +146,7 @@ async def list_resolved_markets(
            e.ticker,
            e.event_type,
            e.question,
+           e.created_at,
            e.resolution_at,
            e.resolved_at,
            e.resolution_outcome,
