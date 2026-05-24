@@ -3,7 +3,7 @@
 import ExportButtons from "@/components/ExportButtons";
 import { formatDateTime as formatDate } from "@/libs/formatDate";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 /**
  * Shape returned by FastAPI's GET /v1/markets/resolved.
@@ -63,6 +63,23 @@ export default function MarketsTable({
   const [eventType, setEventType] = useState<EventTypeFilter>("ALL");
   const [markets, setMarkets] = useState<ResolvedMarket[]>(initial);
   const [loading, setLoading] = useState(false);
+  // Client-side fuzzy search across the currently-loaded set. We don't
+  // round-trip to the API for this — 500 rows is trivially filterable in
+  // the browser, and instant feedback is way better UX than typing →
+  // wait → see results. Trade-off: if a user searches for text that only
+  // appears in old (>500) markets, they'd need to widen the filter first.
+  const [search, setSearch] = useState("");
+
+  // Memoise the search result so React doesn't re-filter when unrelated
+  // state changes (e.g. loading flag flipping during a re-fetch).
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return markets;
+    return markets.filter((m) => {
+      const hay = `${m.question ?? ""} ${m.slug ?? ""} ${m.market_id}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [markets, search]);
 
   // Re-fetch from the proxy whenever any filter changes.
   useEffect(() => {
@@ -98,6 +115,17 @@ export default function MarketsTable({
 
   return (
     <div className="space-y-4">
+      {/* Search box — instant client-side filter across question/slug/id */}
+      <div className="form-control">
+        <input
+          type="text"
+          className="input input-bordered w-full"
+          placeholder="Search by question, slug, or market id…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+
       {/* Filter tabs + export */}
       <div className="flex flex-wrap items-center gap-4 justify-between">
         <div className="flex flex-wrap items-center gap-4">
@@ -162,15 +190,17 @@ export default function MarketsTable({
                 </td>
               </tr>
             )}
-            {!loading && markets.length === 0 && (
+            {!loading && visible.length === 0 && (
               <tr>
                 <td colSpan={6} className="text-center py-8 opacity-60">
-                  No resolved markets yet for this filter.
+                  {search
+                    ? `No markets match "${search}". Try widening filters or clearing the search.`
+                    : "No resolved markets yet for this filter."}
                 </td>
               </tr>
             )}
             {!loading &&
-              markets.map((m) => {
+              visible.map((m) => {
                 // Winner: prefer the explicit `winner` from /v1/markets/{id}
                 // (used when this list is built from per-market enrichment),
                 // otherwise derive from `resolution_outcome` on the list endpoint.
@@ -235,9 +265,11 @@ export default function MarketsTable({
       </div>
 
       <p className="text-xs opacity-60">
-        Showing the {markets.length} most-recently-resolved markets. Volume,
-        liquidity, fill price, and PnL are computed on-demand on the
-        single-market page (too expensive to aggregate across the list).
+        {search
+          ? `Showing ${visible.length} of ${markets.length} loaded markets matching "${search}".`
+          : `Showing the ${markets.length} most-recently-resolved markets.`}{" "}
+        Volume, liquidity, fill price, and PnL are computed on-demand on
+        the single-market page (too expensive to aggregate across the list).
       </p>
     </div>
   );
