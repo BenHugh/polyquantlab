@@ -46,13 +46,32 @@ router = APIRouter(prefix="/v1/stats", tags=["stats"])
 async def _mid_yes_at(
     ch: AsyncClient, market_id: str, target_ts: datetime
 ) -> float | None:
-    """Latest mid_yes snapshot at or before `target_ts` for a single market."""
+    """Latest non-null mid_yes snapshot at or before `target_ts` for a
+    single market.
+
+    Why we filter `mid_yes IS NOT NULL`: as a binary market approaches
+    resolution, the orderbook often becomes one-sided — everyone bids
+    the winning side, nobody offers — and we can't compute a mid (it
+    needs both a top bid AND a top ask). The collector writes mid_yes
+    as NULL in those cases.
+
+    Without this filter we'd take the most recent snapshot regardless,
+    hit a NULL mid, return None, and silently exclude that market from
+    every calibration plot. That's exactly what was happening to the
+    daily Up/Down markets — most of their final-minute snapshots are
+    one-sided.
+
+    Walking back to find the most recent snapshot WITH a valid mid is
+    the right behavior: it's still the closest we have to "what was the
+    market saying T-N minutes before resolution".
+    """
     result = await ch.query(
         """
         SELECT mid_yes
           FROM orderbook_snapshots
          WHERE market_id = {market_id:String}
            AND ts <= {target:DateTime64(3)}
+           AND mid_yes IS NOT NULL
          ORDER BY ts DESC LIMIT 1
         """,
         parameters={"market_id": market_id, "target": target_ts},
