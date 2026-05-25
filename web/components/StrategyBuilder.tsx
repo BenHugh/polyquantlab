@@ -16,7 +16,7 @@
  */
 
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
 type Ticker = "BTC" | "ETH" | "SOL";
@@ -114,10 +114,17 @@ function loadStored(): BuilderState | null {
 
 export default function StrategyBuilder() {
   const router = useRouter();
-  const [state, setState] = useState<BuilderState>(
-    () => loadStored() ?? DEFAULT_STATE,
-  );
+  // First render must match what the server produced — otherwise React
+  // throws a hydration error when localStorage values differ from
+  // DEFAULT_STATE. So we render DEFAULT_STATE on the initial pass and
+  // swap in the stored state after mount.
+  const [state, setState] = useState<BuilderState>(DEFAULT_STATE);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    const stored = loadStored();
+    if (stored) setState(stored);
+  }, []);
 
   function persist(next: BuilderState) {
     setState(next);
