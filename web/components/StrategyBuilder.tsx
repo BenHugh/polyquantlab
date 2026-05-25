@@ -259,6 +259,12 @@ interface BuilderState {
   disputePct: number;        // 0..1 fraction of markets that get disputed
   naPct: number;             // 0..1 fraction that resolve N/A (half-refund)
   disputePayoffPct: number;  // payoff per share when disputed (default 0.5)
+  // Order type modeling (Phase Y.2) — taker (market) vs maker (limit).
+  // "market" walks the book and pays taker fees; "limit" posts at
+  // best_ask + offset and may never fill within the timeout window.
+  orderType: "market" | "limit";
+  limitOffsetCents: number;  // signed; e.g. -2 = 2c below best ask for a buy
+  limitTimeoutS: number;     // cancel + skip if unfilled after this many seconds
   // Conditions — each section is a root Group (op = AND by default)
   // containing leaf Conditions and / or nested Groups.
   tradeLogic: TradeLogic;
@@ -444,6 +450,11 @@ const DEFAULT_STATE: BuilderState = {
   disputePct: 0,
   naPct: 0,
   disputePayoffPct: 0.5,
+  // Default to market orders — taker fills are the most common and
+  // what an unfamiliar user would expect on first run.
+  orderType: "market",
+  limitOffsetCents: -2,
+  limitTimeoutS: 60,
   tradeLogic: "always_up",
   entry: mkGroup(newCondition("token_price")),
   takeProfit: mkGroup(),
@@ -861,6 +872,13 @@ export default function StrategyBuilder() {
       spec.na_pct = state.naPct;
       spec.dispute_payoff_pct = state.disputePayoffPct;
     }
+    // Same opt-in treatment for maker / limit orders. Default
+    // order_type=market behaves identically to legacy payloads.
+    if (state.orderType === "limit") {
+      spec.order_type = "limit";
+      spec.limit_offset_cents = state.limitOffsetCents;
+      spec.limit_timeout_s = state.limitTimeoutS;
+    }
     return spec;
   }
 
@@ -1099,24 +1117,65 @@ export default function StrategyBuilder() {
         </span>
       </div>
 
-      {/* Visual / Code view toggle (Phase X.1). Compiling to Python is a
-        * pure-function call on the builder state — no round-trip to the
-        * backend — so we render the script live as the user edits.
+      {/* Visual / Code view toggle (Phase X.1, restyled Y.1). Phase X.1
+        * used DaisyUI's tabs-boxed which made the inactive tab nearly
+        * invisible — users complained they couldn't tell the Generated
+        * Code option even existed. Now: custom segmented control with
+        * prominent active state (primary tint + shadow) and a small
+        * "download" hint icon on the Code tab so the value-prop is
+        * visible at rest.
         */}
-      <div role="tablist" className="tabs tabs-boxed inline-flex bg-base-200/40 p-1 rounded-lg">
+      <div
+        role="tablist"
+        aria-label="Builder view"
+        className="inline-flex p-1 rounded-xl border border-base-300 bg-base-200/40 gap-1"
+      >
         <button
           role="tab"
+          aria-selected={view === "visual"}
           onClick={() => setView("visual")}
-          className={`tab tab-sm ${view === "visual" ? "tab-active" : ""}`}
+          className={
+            "flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 " +
+            (view === "visual"
+              ? "bg-base-100 text-base-content shadow-sm ring-1 ring-base-300"
+              : "text-base-content/60 hover:text-base-content hover:bg-base-100/50")
+          }
         >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1" />
+            <rect x="14" y="3" width="7" height="7" rx="1" />
+            <rect x="3" y="14" width="7" height="7" rx="1" />
+            <rect x="14" y="14" width="7" height="7" rx="1" />
+          </svg>
           Visual
         </button>
         <button
           role="tab"
+          aria-selected={view === "code"}
           onClick={() => setView("code")}
-          className={`tab tab-sm ${view === "code" ? "tab-active" : ""}`}
+          className={
+            "flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 " +
+            (view === "code"
+              ? "bg-base-100 text-base-content shadow-sm ring-1 ring-base-300"
+              : "text-base-content/60 hover:text-base-content hover:bg-base-100/50")
+          }
+          title="Download a runnable Python script of this strategy"
         >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+          </svg>
           Generated Code
+          <span
+            className={
+              "text-[9px] uppercase tracking-widest font-mono px-1.5 py-0.5 rounded " +
+              (view === "code"
+                ? "bg-primary/20 text-primary"
+                : "bg-primary/10 text-primary/80")
+            }
+          >
+            .py
+          </span>
         </button>
       </div>
 
@@ -1221,6 +1280,51 @@ export default function StrategyBuilder() {
               title="Refuse entries when the best ask exceeds this. 1.00 = no limit."
             />
           </Field>
+          <Field label="Order type">
+            <select
+              className="select select-sm select-bordered w-full"
+              value={state.orderType}
+              onChange={(e) =>
+                update("orderType", e.target.value as "market" | "limit")
+              }
+              title="Market = taker, instant fill at best ask (2% fee). Limit = maker, post below market and wait — may never fill, but 0% fee."
+            >
+              <option value="market">Market (taker, 2% fee)</option>
+              <option value="limit">Limit (maker, 0% fee)</option>
+            </select>
+          </Field>
+          {state.orderType === "limit" && (
+            <>
+              <Field label={`Limit offset · ${state.limitOffsetCents}¢`}>
+                <input
+                  type="range"
+                  min={-10}
+                  max={0}
+                  step={1}
+                  className="range range-xs range-accent"
+                  value={state.limitOffsetCents}
+                  onChange={(e) =>
+                    update("limitOffsetCents", parseInt(e.target.value, 10))
+                  }
+                  title="Cents below best ask to post your limit order. Wider = less likely to fill but better price if it does."
+                />
+              </Field>
+              <Field label={`Timeout · ${state.limitTimeoutS}s`}>
+                <input
+                  type="number"
+                  min={1}
+                  max={3600}
+                  step={5}
+                  className="input input-sm input-bordered w-full"
+                  value={state.limitTimeoutS}
+                  onChange={(e) =>
+                    update("limitTimeoutS", parseInt(e.target.value, 10) || 60)
+                  }
+                  title="Cancel and skip the entry if the limit hasn't filled in this many seconds."
+                />
+              </Field>
+            </>
+          )}
         </div>
 
         <div className="mt-2 pt-3 border-t border-base-300/50">

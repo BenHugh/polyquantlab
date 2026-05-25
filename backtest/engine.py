@@ -165,6 +165,55 @@ def _best_ask_for_side(snap: OrderBookSnapshot, side: Side) -> float | None:
     return None
 
 
+def _try_limit_fill(
+    snapshots: list[OrderBookSnapshot],
+    start_idx: int,
+    side: Side,
+    limit_price: float,
+    timeout_s: float,
+    size_usd: float,
+) -> tuple[float, float, int] | None:
+    """Walk forward from `start_idx` looking for a snapshot where the
+    market crossed our limit. Returns (avg_price, filled_usd, end_idx)
+    or None if we timed out / never filled.
+
+    Maker fill model (v1):
+      For a BUY at `limit_price`: we sit on the bid stack waiting for an
+      aggressive seller to come down to our price. Approximated as
+      "did best_yes_bid (or no_bid) drop to ≤ limit_price during the
+      timeout window?". When that happens we assume our queue position
+      cleared and we filled at the limit price exactly. (Zero slippage,
+      worst-case maker rebate of 0% — matches Polymarket's current
+      crypto-market fee schedule.)
+
+    For a SELL at `limit_price`: symmetric. Wait for best_yes_ask (or
+    no_ask) to rise to ≥ limit_price.
+
+    This is intentionally simple. It captures the essential maker risk
+    ("your order may never fill") without modelling queue depth or
+    cancel rate. A v2 can add per-level queue tracking from snapshot
+    deltas — see Phase Y plan note in [[known-limitations]]."""
+    start_snap = snapshots[start_idx]
+    deadline = start_snap.ts.timestamp() + timeout_s
+    for j in range(start_idx, len(snapshots)):
+        snap = snapshots[j]
+        if snap.ts.timestamp() > deadline:
+            return None
+        if side == Side.BUY_YES and snap.yes_bids:
+            if snap.yes_bids[0].price <= limit_price:
+                return limit_price, size_usd, j
+        elif side == Side.BUY_NO and snap.no_bids:
+            if snap.no_bids[0].price <= limit_price:
+                return limit_price, size_usd, j
+        elif side == Side.SELL_YES and snap.yes_asks:
+            if snap.yes_asks[0].price >= limit_price:
+                return limit_price, size_usd, j
+        elif side == Side.SELL_NO and snap.no_asks:
+            if snap.no_asks[0].price >= limit_price:
+                return limit_price, size_usd, j
+    return None
+
+
 def _replay_single_market(
     snapshots: list[OrderBookSnapshot],
     strategy,
@@ -173,6 +222,9 @@ def _replay_single_market(
     *,
     fill_mode: str = "walk_book",
     max_fill_price: float = 1.0,
+    order_type: str = "market",
+    limit_offset_cents: float = -2.0,
+    limit_timeout_s: float = 60.0,
 ) -> tuple[list[Trade], float, float]:
     """Replay one market. Returns (trades, pnl, fees).
 
@@ -333,19 +385,43 @@ def _replay_single_market(
         ):
             continue
 
-        if fill_mode == "mid":
+        if order_type == "limit":
+            # Maker entry — place a limit at best_ask + offset/100 (offset
+            # is in cents; -2 means 2c below). Then walk forward up to
+            # limit_timeout_s seconds checking whether the book crossed
+            # our price. Maker fee = 0 (Polymarket crypto markets pay no
+            # taker fee, and no rebate either — this is the conservative
+            # placeholder).
+            ref_price = best_ask if best_ask is not None else _mid_for_side(snap, side)
+            if ref_price is None:
+                continue
+            limit_price = ref_price + (limit_offset_cents / 100.0)
+            # Clamp to (0, 1) just in case the offset is large.
+            limit_price = max(0.01, min(0.99, limit_price))
+            current_idx = snapshots.index(snap)
+            fill = _try_limit_fill(
+                snapshots, current_idx, side, limit_price, limit_timeout_s, size_usd,
+            )
+            if fill is None:
+                # Order never filled inside the timeout; cancel + scan on.
+                continue
+            avg_price, filled_usd, _fill_idx = fill
+            slippage_bps = 0.0
+            fee = 0.0  # maker is free on Polymarket today
+        elif fill_mode == "mid":
             mid_at_fill = _mid_for_side(snap, side)
             if mid_at_fill is None:
                 continue
             avg_price = mid_at_fill
             filled_usd = size_usd
             slippage_bps = 0.0
+            fee = platform_fee(_platform_of(snap.market_id), filled_usd, avg_price)
         else:
             fill = walk_book(snap, side, size_usd)
             if fill is None:
                 continue
             avg_price, filled_usd, slippage_bps = fill
-        fee = platform_fee(_platform_of(snap.market_id), filled_usd, avg_price)
+            fee = platform_fee(_platform_of(snap.market_id), filled_usd, avg_price)
         fees_total += fee
         trades.append(
             Trade(
@@ -427,6 +503,9 @@ async def _process_one_market(
     na_pct: float = 0.0,
     dispute_payoff_pct: float = 0.5,
     random_seed: int = 42,
+    order_type: str = "market",
+    limit_offset_cents: float = -2.0,
+    limit_timeout_s: float = 60.0,
 ) -> tuple[list[Trade], float, float] | None:
     """Load + replay one market under the global concurrency cap.
 
@@ -475,6 +554,9 @@ async def _process_one_market(
                 resolved_yes_price,
                 fill_mode=fill_mode,
                 max_fill_price=max_fill_price,
+                order_type=order_type,
+                limit_offset_cents=limit_offset_cents,
+                limit_timeout_s=limit_timeout_s,
             )
             return (trades, pnl, fees) if trades else None
         except Exception:  # noqa: BLE001
@@ -505,6 +587,7 @@ async def run_backtest(
     EXECUTION_PARAMS = {
         "fill_mode", "max_fill_price",
         "dispute_pct", "na_pct", "dispute_payoff_pct", "random_seed",
+        "order_type", "limit_offset_cents", "limit_timeout_s",
     }
     spec_for_strategy = {
         k: v for k, v in strategy_spec.items() if k not in EXECUTION_PARAMS
@@ -537,6 +620,23 @@ async def run_backtest(
     except (TypeError, ValueError):
         random_seed = 42
 
+    # Maker / limit-order params (Phase Y.2). Defaults preserve the
+    # existing taker-only behaviour. "market" = walk_book (or mid if
+    # fill_mode=mid); "limit" = post at best_ask + offset and walk
+    # forward in time waiting for the book to cross.
+    order_type = str(strategy_spec.get("order_type") or "market").lower()
+    if order_type not in ("market", "limit"):
+        order_type = "market"
+    try:
+        limit_offset_cents = float(strategy_spec.get("limit_offset_cents", -2.0))
+    except (TypeError, ValueError):
+        limit_offset_cents = -2.0
+    try:
+        limit_timeout_s = float(strategy_spec.get("limit_timeout_s", 60.0))
+    except (TypeError, ValueError):
+        limit_timeout_s = 60.0
+    limit_timeout_s = max(1.0, min(3600.0, limit_timeout_s))
+
     strategy = build_strategy(spec_for_strategy)
     universe = await list_resolved_markets(
         pg_pool,
@@ -566,6 +666,9 @@ async def run_backtest(
                 na_pct=na_pct,
                 dispute_payoff_pct=dispute_payoff_pct,
                 random_seed=random_seed,
+                order_type=order_type,
+                limit_offset_cents=limit_offset_cents,
+                limit_timeout_s=limit_timeout_s,
             )
             for m in universe
         ]
