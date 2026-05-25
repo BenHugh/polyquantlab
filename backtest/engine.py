@@ -368,9 +368,17 @@ async def _process_one_market(
             resolution = await load_resolution(pg_pool, market_id)
             if resolution is None:
                 return None
-            market_start = since or resolution.resolved_at.replace(
-                hour=0, minute=0
-            )
+            # When the user didn't pin a `since`, load EVERY snapshot we
+            # have for this market so the strategy can enter at the first
+            # available data point (typically market creation, e.g. 5 min
+            # before resolution for 5m markets). The previous default of
+            # "midnight of resolution day" artificially clustered all
+            # entry timestamps around midnight UTC, which made a 50-market
+            # backtest look like 50 trades at the same instant — a
+            # PolyBackTest-comparison surfaced this in [[known-limitations]].
+            # 1970 is a safe lower bound (cheaper than special-casing None
+            # through the ClickHouse-typed parameter binding).
+            market_start = since or datetime(1970, 1, 1, tzinfo=resolution.resolved_at.tzinfo)
             snapshots = await load_snapshots(
                 ch,
                 market_id=market_id,
