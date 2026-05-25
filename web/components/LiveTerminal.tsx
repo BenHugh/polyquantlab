@@ -38,8 +38,15 @@ interface Board {
   snapshot_ts: string;
   mid_yes: number | null;
   mid_no: number | null;
+  best_yes_bid: number | null;
+  best_yes_ask: number | null;
+  best_no_bid: number | null;
+  best_no_ask: number | null;
   spread_yes: number | null;
   spread_no: number | null;
+  last_trade_yes_price: number | null;
+  last_trade_no_price: number | null;
+  last_trade_ts: string | null;
   underlying_price: number | null;
   orderbook_up: { bids: OrderbookLevel[]; asks: OrderbookLevel[] };
   orderbook_down: { bids: OrderbookLevel[]; asks: OrderbookLevel[] };
@@ -233,7 +240,10 @@ export default function LiveTerminal() {
               <BoardCard
                 key={b.market_id}
                 board={b}
-                mispricing={computeMispricing(b.mid_yes, calibration)}
+                mispricing={computeMispricing(
+                  b.last_trade_yes_price ?? b.mid_yes,
+                  calibration,
+                )}
               />
             ))
           )}
@@ -282,14 +292,20 @@ function BoardCard({
       <div className="grid grid-cols-2 divide-x divide-base-300">
         <SideBlock
           label="UP"
+          lastTrade={board.last_trade_yes_price}
           mid={board.mid_yes}
+          bestBid={board.best_yes_bid}
+          bestAsk={board.best_yes_ask}
           spread={board.spread_yes}
           book={board.orderbook_up}
           tone="primary"
         />
         <SideBlock
           label="DOWN"
+          lastTrade={board.last_trade_no_price}
           mid={board.mid_no}
+          bestBid={board.best_no_bid}
+          bestAsk={board.best_no_ask}
           spread={board.spread_no}
           book={board.orderbook_down}
           tone="error"
@@ -301,30 +317,61 @@ function BoardCard({
 
 function SideBlock({
   label,
+  lastTrade,
   mid,
+  bestBid,
+  bestAsk,
   spread,
   book,
   tone,
 }: {
   label: string;
+  lastTrade: number | null;
   mid: number | null;
+  bestBid: number | null;
+  bestAsk: number | null;
   spread: number | null;
   book: { bids: OrderbookLevel[]; asks: OrderbookLevel[] };
   tone: "primary" | "error";
 }) {
   const accent = tone === "primary" ? "text-primary" : "text-error";
+  // Headline preference: a recent trade (last 60 s) is the truest signal
+  // of where the market is actually transacting. Mid-of-book is a
+  // mathematical artifact when the book is wide (stale far-edge orders
+  // at 10¢ + 90¢ produce mid=50¢ that nobody is actually trading at),
+  // so we only fall back to it when no recent trade exists.
+  const headline = lastTrade ?? mid;
+  const headlineSrc = lastTrade !== null ? "LTP" : "mid";
+  const isWide = spread !== null && spread > 0.1;
   return (
     <div className="p-4">
       <div className="flex items-baseline justify-between mb-2">
         <span className={`text-[10px] font-mono uppercase tracking-widest ${accent}`}>
           {label} token
         </span>
-        <span className="text-xs font-mono text-base-content/40">
-          spread {spread !== null ? `${(spread * 100).toFixed(1)}¢` : "—"}
+        <span
+          className={`text-[10px] font-mono ${isWide ? "text-warning" : "text-base-content/40"}`}
+          title={isWide ? "Order book is wide — no tight quotes on either side right now." : undefined}
+        >
+          {headlineSrc} · spread {spread !== null ? `${(spread * 100).toFixed(1)}¢` : "—"}
         </span>
       </div>
-      <div className={`font-bold text-3xl tracking-tight ${accent}`}>
-        {mid !== null ? mid.toFixed(2) : "—"}
+      <div className={`font-bold text-3xl tracking-tight tabular-nums ${accent}`}>
+        {headline !== null ? headline.toFixed(2) : "—"}
+      </div>
+      <div className="mt-1 text-[11px] font-mono text-base-content/50 flex gap-3">
+        <span>
+          BID{" "}
+          <span className="text-base-content/80">
+            {bestBid !== null ? bestBid.toFixed(2) : "—"}
+          </span>
+        </span>
+        <span>
+          ASK{" "}
+          <span className="text-base-content/80">
+            {bestAsk !== null ? bestAsk.toFixed(2) : "—"}
+          </span>
+        </span>
       </div>
       <div className="mt-3">
         <BookMini bids={book.bids} asks={book.asks} />

@@ -933,6 +933,35 @@ async def get_polymarket_live_board(
 
         ts_, yb, ya, nb, na, mid_yes, spread, underlying = snap.result_rows[0]
 
+        # Last trade prices (per side, last 60 s). Falls back to None
+        # when the market has been quiet — UI then uses mid as headline.
+        # Why 60 s: longer windows let a stale outlier (e.g. one-off
+        # 5¢ probe trade) hijack the headline; 60 s tracks the "current"
+        # tape closely.
+        trade_rows = await ch.query(
+            """
+            SELECT side, price, ts
+              FROM trades
+             WHERE market_id = {market_id:String}
+               AND ts > now() - INTERVAL 60 SECOND
+             ORDER BY ts DESC LIMIT 20
+            """,
+            parameters={"market_id": market_id},
+        )
+        last_trade_yes_price: float | None = None
+        last_trade_no_price: float | None = None
+        last_trade_ts: Any = None
+        for tr in trade_rows.result_rows:
+            tside, tprice, tts = tr[0], float(tr[1]), tr[2]
+            if tside.endswith("_YES") and last_trade_yes_price is None:
+                last_trade_yes_price = tprice
+            elif tside.endswith("_NO") and last_trade_no_price is None:
+                last_trade_no_price = tprice
+            if last_trade_ts is None:
+                last_trade_ts = tts
+            if last_trade_yes_price is not None and last_trade_no_price is not None:
+                break
+
         def _safe_json(raw: Any) -> list[dict[str, Any]]:
             try:
                 return orjson.loads(raw)
@@ -964,6 +993,9 @@ async def get_polymarket_live_board(
             else None
         )
 
+        best_yes_bid = yes_bids[0]["price"] if yes_bids else None
+        best_yes_ask = yes_asks[0]["price"] if yes_asks else None
+
         boards.append({
             "event_type": row["event_type"],
             "market_id": market_id,
@@ -975,8 +1007,15 @@ async def get_polymarket_live_board(
             "snapshot_ts": ts_.isoformat(),
             "mid_yes": float(mid_yes) if mid_yes is not None else None,
             "mid_no": mid_no,
+            "best_yes_bid": best_yes_bid,
+            "best_yes_ask": best_yes_ask,
+            "best_no_bid": best_no_bid,
+            "best_no_ask": best_no_ask,
             "spread_yes": float(spread) if spread is not None else None,
             "spread_no": spread_no,
+            "last_trade_yes_price": last_trade_yes_price,
+            "last_trade_no_price": last_trade_no_price,
+            "last_trade_ts": last_trade_ts.isoformat() if last_trade_ts else None,
             "underlying_price": float(underlying) if underlying is not None else None,
             "orderbook_up": {"bids": yes_bids, "asks": yes_asks},
             "orderbook_down": {"bids": no_bids, "asks": no_asks},
