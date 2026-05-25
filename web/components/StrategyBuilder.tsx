@@ -1335,6 +1335,9 @@ function ConditionGroup({
     group.op === "OR"
       ? "bg-accent/15 border-accent/30 text-accent"
       : "bg-primary/10 border-primary/25 text-primary";
+  const matchLabel =
+    group.op === "OR" ? "Match ANY of these" : "Match ALL of these";
+  const showHeader = group.children.length >= 2 || !isRoot;
 
   return (
     <div
@@ -1344,24 +1347,28 @@ function ConditionGroup({
           : "space-y-2 pl-3 border-l-2 border-base-300/60 relative"
       }
     >
-      {/* AND/OR pill — clickable, toggles op. Only shows when there are
-        * at least 2 children (otherwise the joiner doesn't apply). Root
-        * groups get a smaller header pill placed above the rows. */}
-      {(group.children.length >= 2 || !isRoot) && (
-        <div className="flex items-center gap-2">
+      {/* Group op — ONE pill at the head, no mid-pills between siblings.
+        * Wording uses "Match ALL / ANY" instead of AND/OR jargon. Clicking
+        * toggles. Subtle help text reminds users that mixed precedence
+        * (A AND B OR C) needs an explicit sub-group. */}
+      {showHeader && (
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => handlers.onToggleOp(path)}
-            className={`text-[10px] font-mono uppercase tracking-widest border rounded px-2 py-0.5 transition-colors ${pillTone} hover:brightness-110`}
-            title="Click to toggle between AND / OR"
+            className={`group/toggle inline-flex items-center gap-1.5 text-[11px] font-medium border rounded-md px-2.5 py-1 transition-colors ${pillTone} hover:brightness-110`}
+            title="Click to toggle: Match ALL (AND) ↔ Match ANY (OR). Add a sub-group for mixed precedence."
           >
-            {group.op}
+            <span className="font-mono text-[9px] uppercase tracking-widest opacity-60 group-hover/toggle:opacity-80">
+              {group.op}
+            </span>
+            <span>{matchLabel}</span>
           </button>
           {!isRoot && (
             <button
               type="button"
               onClick={() => handlers.onRemove(path)}
-              className="text-[10px] text-base-content/40 hover:text-error opacity-0 group-hover:opacity-100 transition-opacity"
+              className="text-[10px] text-base-content/40 hover:text-error transition-colors"
               aria-label="Remove group"
               title="Remove group"
             >
@@ -1371,26 +1378,19 @@ function ConditionGroup({
         </div>
       )}
 
-      {/* Children */}
+      {/* Children — flat list, no mid-pills (the head pill already
+        * declares the join semantic; mid-pills were ambiguous). */}
       {isEmpty ? (
         <div className="text-center text-xs text-base-content/40 py-3 font-mono">
           No conditions yet — add one below
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {group.children.map((child, idx) => {
             const childPath = [...path, idx];
+            const childKey = (child as Node).id ?? idx;
             return (
-              <div key={isGroup(child) ? child.id : child.id} className="group">
-                {idx > 0 && (
-                  <div className="flex justify-center -my-1 py-0.5">
-                    <span
-                      className={`text-[9px] font-mono uppercase tracking-widest border rounded px-1.5 py-px ${pillTone}`}
-                    >
-                      {group.op}
-                    </span>
-                  </div>
-                )}
+              <div key={childKey} className="group">
                 {isGroup(child) ? (
                   <ConditionGroup group={child} path={childPath} {...handlers} />
                 ) : (
@@ -1418,7 +1418,7 @@ function ConditionGroup({
         <button
           onClick={() => handlers.onAddGroup(path)}
           className="btn btn-ghost btn-sm justify-start border border-dashed border-base-300/60 hover:border-base-content/30"
-          title="Add a nested group with its own AND/OR"
+          title="Add a nested group with its own ALL/ANY"
         >
           + Add group
         </button>
@@ -1444,19 +1444,19 @@ function ConditionRow({
     spec.unit === "usd" ? 10 :
     spec.unit === "stddev" ? 0.01 :
     0.01;
-  // The wrapping `group` class is set by the parent <div className="group">,
-  // so hover anywhere on the row reveals the delete button (Linear / Notion
-  // pattern — keeps the row visually quiet when not interacting).
+  // Lovable-compact layout: max-width capped at 36rem (~ 1 row even on
+  // wide screens), no flex-wrap. Selects use minimal width with native
+  // dropdown chevron. Trash hidden until hover (parent <div> carries
+  // the `group` class so :group-hover targets us). Inline unit hint is
+  // placeholder on the value input, not a separate <span>.
   return (
-    <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg bg-base-100 border border-base-300/70 transition-colors hover:border-base-content/20">
-      {/* Index badge */}
-      <span className="text-[10px] font-mono text-base-content/40 w-6 shrink-0">
-        #{index}
+    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-base-100 border border-base-300/70 transition-colors hover:border-base-content/20 max-w-[36rem]">
+      <span className="text-[10px] font-mono text-base-content/40 w-5 shrink-0 select-none">
+        {index}
       </span>
 
-      {/* Parameter type */}
       <select
-        className="select select-xs min-w-[8.5rem]"
+        className="select select-xs select-ghost min-w-0 flex-1 max-w-[10rem]"
         value={c.type}
         onChange={(e) => onPatch({ type: e.target.value as ConditionType })}
         title={spec.description}
@@ -1468,7 +1468,7 @@ function ConditionRow({
 
       {spec.hasSide && (
         <select
-          className="select select-xs"
+          className="select select-xs select-ghost w-16 shrink-0"
           value={c.side ?? "yes"}
           onChange={(e) => onPatch({ side: e.target.value as TokenSide })}
         >
@@ -1478,7 +1478,7 @@ function ConditionRow({
       )}
 
       <select
-        className="select select-xs"
+        className="select select-xs select-ghost w-16 shrink-0"
         value={c.op}
         onChange={(e) => onPatch({ op: e.target.value as Op })}
       >
@@ -1489,43 +1489,41 @@ function ConditionRow({
 
       <input
         type="number"
-        className="input input-xs w-24 tabular-nums"
+        className="input input-xs input-bordered w-20 tabular-nums shrink-0"
         step={step}
         value={c.value}
+        placeholder={UNIT_HINT[spec.unit]}
         onChange={(e) => onPatch({ value: parseFloat(e.target.value) || 0 })}
       />
-      <span className="text-[10px] text-base-content/40 font-mono">
-        {UNIT_HINT[spec.unit]}
-      </span>
 
       {spec.needsWindow && (
         <>
-          <span className="text-[10px] text-base-content/40 font-mono uppercase tracking-widest">
-            over
+          <span className="text-[9px] text-base-content/40 font-mono uppercase tracking-widest shrink-0">
+            /
           </span>
           <input
             type="number"
-            className="input input-xs w-20 tabular-nums"
+            className="input input-xs input-bordered w-14 tabular-nums shrink-0"
             step={10}
             min={10}
             max={3600}
             value={c.window_sec ?? 60}
+            placeholder="60s"
             onChange={(e) =>
               onPatch({ window_sec: parseInt(e.target.value, 10) || 60 })
             }
+            title="Lookback window (seconds)"
           />
-          <span className="text-[10px] text-base-content/40 font-mono">s</span>
         </>
       )}
 
-      {/* Hover-only delete. Trash icon + slightly larger hit target. */}
       <button
-        className="btn btn-ghost btn-sm btn-square ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-base-content/50 hover:text-error"
+        className="btn btn-ghost btn-xs btn-square ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-base-content/40 hover:text-error shrink-0"
         onClick={onRemove}
         aria-label="Remove condition"
         title="Remove this condition"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="3 6 5 6 21 6" />
           <path d="M19 6l-2 14H7L5 6" />
           <path d="M10 11v6M14 11v6" />

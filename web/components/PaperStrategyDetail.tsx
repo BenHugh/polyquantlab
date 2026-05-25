@@ -135,8 +135,102 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
   const losses = closed.length - wins;
   const winRate = closed.length > 0 ? wins / closed.length : 0;
 
+  // Per-trade net P&L = pnl - fees. Used by profit factor, avg trade,
+  // best/worst, and the drawdown computation on the equity curve.
+  const closedNetPnls = closed.map((p) => (p.pnl ?? 0) - (p.fees ?? 0));
+  const grossWins = closedNetPnls.filter((p) => p > 0).reduce((a, b) => a + b, 0);
+  const grossLosses = Math.abs(
+    closedNetPnls.filter((p) => p < 0).reduce((a, b) => a + b, 0),
+  );
+  const profitFactor =
+    grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : null;
+  const avgTrade = closed.length > 0
+    ? closedNetPnls.reduce((a, b) => a + b, 0) / closed.length
+    : 0;
+  const bestTrade = closedNetPnls.length ? Math.max(...closedNetPnls) : null;
+  const worstTrade = closedNetPnls.length ? Math.min(...closedNetPnls) : null;
+  // Drawdown from running peak in chronological order — matches the
+  // backtest result page convention.
+  let runningPeak = 0;
+  let runningSum = 0;
+  let maxDrawdown = 0;
+  for (const p of closedNetPnls) {
+    runningSum += p;
+    if (runningSum > runningPeak) runningPeak = runningSum;
+    const dd = runningPeak - runningSum;
+    if (dd > maxDrawdown) maxDrawdown = dd;
+  }
+
+  // Time-since-last-fill for the Live status pill. `opened_at` is the
+  // most recent activity signal we have on the worker side; "fired
+  // X min ago" tells the user whether the strategy is still alive.
+  const lastFillTs = positions.length > 0
+    ? Math.max(
+        ...positions.map((p) => new Date(p.opened_at).getTime()),
+      )
+    : null;
+  const ageMinutes = lastFillTs != null
+    ? Math.floor((Date.now() - lastFillTs) / 60000)
+    : null;
+
+  // Hero verdict — one sentence at the top. Priority:
+  //   1. Baseline comparison if available (tracking ahead/behind)
+  //   2. Else net-PnL trajectory + sample size
+  function heroSentence(): { text: string; tone: "success" | "error" | "neutral" } {
+    const livePnl = equity?.final_net_pnl ?? 0;
+    if (baseline && baseline.status === "completed" && baseline.total_pnl != null
+        && baseline.n_trades && baseline.n_trades > 0 && closed.length > 0) {
+      const completionRatio = closed.length / baseline.n_trades;
+      const expected = baseline.total_pnl * completionRatio;
+      const delta = livePnl - expected;
+      const pct = expected !== 0 ? (delta / Math.abs(expected)) * 100 : 0;
+      if (Math.abs(pct) < 5) {
+        return { text: `Tracking the backtest baseline closely — within ${pct.toFixed(1)}% of expected P&L at ${closed.length} trades.`, tone: "neutral" };
+      }
+      if (delta >= 0) {
+        return { text: `Outpacing the backtest baseline by ${pct.toFixed(1)}% (+$${delta.toFixed(2)}) at ${closed.length} trades. Promising — let it run more.`, tone: "success" };
+      }
+      return { text: `Underperforming the backtest by ${Math.abs(pct).toFixed(1)}% ($${delta.toFixed(2)}) at ${closed.length} trades. Could be regime shift, slippage, or noise.`, tone: "error" };
+    }
+    if (closed.length === 0) {
+      return open.length > 0
+        ? { text: `${open.length} position${open.length === 1 ? "" : "s"} live — waiting for the first market to resolve before P&L appears.`, tone: "neutral" }
+        : { text: `Watching for entries. Strategy fires on each matching snapshot — first opportunity may take minutes.`, tone: "neutral" };
+    }
+    if (livePnl > 0) {
+      return { text: `Net +$${livePnl.toFixed(2)} across ${closed.length} closed trades · ${(winRate * 100).toFixed(0)}% win rate.`, tone: "success" };
+    }
+    if (livePnl < 0) {
+      return { text: `Net −$${Math.abs(livePnl).toFixed(2)} across ${closed.length} closed trades · ${(winRate * 100).toFixed(0)}% win rate.`, tone: "error" };
+    }
+    return { text: `Break-even across ${closed.length} closed trades.`, tone: "neutral" };
+  }
+  const hero = heroSentence();
+
+  const heroTone =
+    hero.tone === "success" ? "border-success/40 bg-success/5 text-success" :
+    hero.tone === "error" ? "border-error/40 bg-error/5 text-error" :
+    "border-base-300 bg-base-200/30 text-base-content/80";
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* Hero verdict — one sentence answers "is this working?" */}
+      <div className={`rounded-xl border ${heroTone} px-5 py-4 flex items-baseline justify-between gap-4 flex-wrap`}>
+        <div className="space-y-1 min-w-0 flex-1">
+          <div className="text-[10px] font-mono uppercase tracking-widest opacity-60">
+            Live verdict
+          </div>
+          <div className="text-base leading-relaxed">
+            {hero.text}
+          </div>
+        </div>
+        <LiveStatusPill
+          active={strategy.active}
+          monitoring={open.length}
+          ageMinutes={ageMinutes}
+        />
+      </div>
+
       {/* Strategy header */}
       <div className="rounded-lg border border-base-300 bg-base-100 p-4">
         <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -165,17 +259,61 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
         </details>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      {/* Primary stats — net P&L, win rate, edge metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat
           label="Net P&L"
-          value={`$${equity ? (equity.final_net_pnl >= 0 ? "+" : "") + equity.final_net_pnl.toFixed(2) : "0.00"}`}
+          value={`${equity && equity.final_net_pnl >= 0 ? "+" : ""}$${equity ? equity.final_net_pnl.toFixed(2) : "0.00"}`}
           accent={equity && equity.final_net_pnl >= 0 ? "success" : equity && equity.final_net_pnl < 0 ? "error" : undefined}
         />
         <Stat label="Win rate" value={`${(winRate * 100).toFixed(1)}%`} />
-        <Stat label="Open positions" value={open.length.toString()} />
-        <Stat label="Closed positions" value={closed.length.toString()} />
-        <Stat label="W / L" value={`${wins} / ${losses}`} />
+        <Stat
+          label="Profit factor"
+          value={
+            profitFactor === null
+              ? "—"
+              : profitFactor === Infinity
+                ? "∞"
+                : profitFactor.toFixed(2)
+          }
+          accent={
+            profitFactor === null || profitFactor === Infinity
+              ? undefined
+              : profitFactor >= 1
+                ? "success"
+                : "error"
+          }
+        />
+        <Stat
+          label="Avg trade"
+          value={`${avgTrade >= 0 ? "+" : ""}$${avgTrade.toFixed(2)}`}
+          accent={
+            closed.length === 0 ? undefined :
+            avgTrade > 0 ? "success" : avgTrade < 0 ? "error" : undefined
+          }
+        />
+      </div>
+      {/* Secondary stats — tail + drawdown */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Stat
+          label="Best trade"
+          value={bestTrade !== null ? `+$${bestTrade.toFixed(2)}` : "—"}
+          accent={bestTrade !== null && bestTrade > 0 ? "success" : undefined}
+        />
+        <Stat
+          label="Worst trade"
+          value={worstTrade !== null ? `$${worstTrade.toFixed(2)}` : "—"}
+          accent={worstTrade !== null && worstTrade < 0 ? "error" : undefined}
+        />
+        <Stat
+          label="Max drawdown"
+          value={`$${maxDrawdown.toFixed(2)}`}
+          accent={maxDrawdown > 0 ? "error" : undefined}
+        />
+        <Stat
+          label="Trades"
+          value={`${wins} W / ${losses} L`}
+        />
       </div>
 
       {/* Baseline backtest comparison — only when the strategy was
@@ -187,8 +325,15 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
         liveWinRate={winRate}
       />
 
-      {/* Equity curve */}
-      <EquityChart equity={equity} />
+      {/* Open positions — currently in-flight trades. Pulled out as
+        * its own section so the user can see "live state" at a glance
+        * without scrolling through the full chronological table. */}
+      {open.length > 0 && (
+        <OpenPositionsCard positions={open} />
+      )}
+
+      {/* Equity curve + drawdown overlay */}
+      <EquityChart equity={equity} maxDrawdown={maxDrawdown} />
 
       {/* Positions */}
       <div className="rounded-lg border border-base-300 bg-base-100">
@@ -281,7 +426,13 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
   );
 }
 
-function EquityChart({ equity }: { equity: EquityCurve | null }) {
+function EquityChart({
+  equity,
+  maxDrawdown,
+}: {
+  equity: EquityCurve | null;
+  maxDrawdown: number;
+}) {
   if (!equity || equity.points.length < 2) {
     return (
       <div className="rounded-lg border border-base-300 bg-base-100 p-4 text-sm opacity-60 text-center py-8">
@@ -292,33 +443,175 @@ function EquityChart({ equity }: { equity: EquityCurve | null }) {
   const W = 700;
   const H = 160;
   const values = equity.points.map((p) => p.cumulative_net_pnl);
+  // Compute running peak per point so we can shade drawdown regions.
+  let peak = 0;
+  const peaks = values.map((v) => {
+    if (v > peak) peak = v;
+    return peak;
+  });
   const lo = Math.min(...values, 0);
   const hi = Math.max(...values, 0);
   const range = Math.max(hi - lo, 1e-9);
   const step = W / (values.length - 1);
   const yZero = H - ((0 - lo) / range) * H;
+  const yFor = (v: number) => H - ((v - lo) / range) * H;
   const path = values.map((v, i) => {
     const x = i * step;
-    const y = H - ((v - lo) / range) * H;
+    const y = yFor(v);
     return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
+  // Peak line — running maximum. Drawdown = peak - current; the shaded
+  // band between the two lines visualises pain. When the current value
+  // equals the peak (new high), the band collapses to nothing.
+  const peakPath = peaks.map((v, i) => {
+    const x = i * step;
+    const y = yFor(v);
+    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const ddBandPath =
+    peakPath +
+    " " +
+    values
+      .slice()
+      .reverse()
+      .map((v, j) => {
+        const i = values.length - 1 - j;
+        const x = i * step;
+        const y = yFor(v);
+        return `L${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(" ") +
+    " Z";
   const finalGood = values[values.length - 1] >= 0;
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-2">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h3 className="font-semibold">Equity curve (net P&L)</h3>
-        <span className={`font-mono text-sm ${finalGood ? "text-success" : "text-error"}`}>
-          {finalGood ? "+" : ""}${equity.final_net_pnl.toFixed(2)}
-        </span>
+        <div className="flex items-center gap-3 text-xs font-mono">
+          <span className="text-base-content/50">
+            Max DD: −${maxDrawdown.toFixed(2)}
+          </span>
+          <span className={`${finalGood ? "text-success" : "text-error"}`}>
+            {finalGood ? "+" : ""}${equity.final_net_pnl.toFixed(2)}
+          </span>
+        </div>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-40" preserveAspectRatio="none">
+        {/* Drawdown band — area between peak and current. */}
+        <path d={ddBandPath} fill="oklch(55% 0.2 25 / 0.12)" stroke="none" />
+        {/* Zero baseline */}
         <line x1={0} x2={W} y1={yZero} y2={yZero} stroke="currentColor" strokeOpacity={0.3} strokeDasharray="4 4" />
+        {/* Peak (running max) — dashed line */}
+        <path d={peakPath} fill="none" strokeWidth={1} stroke="currentColor" strokeOpacity={0.35} strokeDasharray="3 3" />
+        {/* Equity curve */}
         <path d={path} fill="none" strokeWidth={1.75}
           stroke={finalGood ? "oklch(60% 0.18 150)" : "oklch(55% 0.2 25)"} />
       </svg>
       <p className="text-xs opacity-60">
         {equity.n_closed_positions} closed positions in chronological order.
+        Shaded region = drawdown from running peak.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Live status pill — top-right of the hero band. Tells the user at a
+ * glance whether the strategy is still running, what it's currently
+ * monitoring, and when it last did something. This is the "I'm
+ * still alive" signal that the original page lacked — without it
+ * a paused strategy looks identical to an active-but-quiet one.
+ */
+function LiveStatusPill({
+  active,
+  monitoring,
+  ageMinutes,
+}: {
+  active: boolean;
+  monitoring: number;
+  ageMinutes: number | null;
+}) {
+  if (!active) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-base-300/40 text-base-content/60 text-xs">
+        <span className="w-2 h-2 rounded-full bg-base-content/40" />
+        Paused
+      </div>
+    );
+  }
+  const ageText =
+    ageMinutes === null
+      ? "no fills yet"
+      : ageMinutes < 1
+        ? "just now"
+        : ageMinutes < 60
+          ? `${ageMinutes}m ago`
+          : `${Math.floor(ageMinutes / 60)}h ago`;
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-success/10 border border-success/30 text-success text-xs">
+      <span className="relative flex h-2 w-2">
+        <span className="absolute inline-flex h-full w-full rounded-full bg-success opacity-75 animate-ping" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-success" />
+      </span>
+      <span>Live</span>
+      <span className="opacity-60">·</span>
+      <span className="opacity-80">
+        {monitoring} open · last fill {ageText}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Open positions card — currently-in-flight trades, lifted out of the
+ * chronological "all trades" table so the live state isn't buried.
+ */
+function OpenPositionsCard({ positions }: { positions: Position[] }) {
+  return (
+    <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="font-semibold text-sm">
+          Open positions ({positions.length})
+        </h3>
+        <span className="text-[10px] font-mono uppercase tracking-widest text-primary/70">
+          waiting for resolution
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        {positions.slice(0, 8).map((p) => (
+          <div
+            key={p.paper_position_id}
+            className="flex items-center justify-between gap-3 px-3 py-2 rounded-md bg-base-100 border border-base-300/60 text-xs"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`badge badge-xs ${p.side.includes("yes") ? "badge-success" : "badge-error"}`}>
+                {p.side}
+              </span>
+              <code className="font-mono opacity-60 truncate max-w-[18ch]" title={p.market_id}>
+                {p.market_id.slice(0, 10)}…
+              </code>
+            </div>
+            <div className="flex items-center gap-3 font-mono tabular-nums text-base-content/70 shrink-0">
+              <span>fill {(p.fill_price * 100).toFixed(0)}¢</span>
+              <span>·</span>
+              <span>${p.size_usd.toFixed(0)}</span>
+              {p.underlying_price != null && (
+                <>
+                  <span>·</span>
+                  <span className="opacity-60">${p.underlying_price.toFixed(0)}</span>
+                </>
+              )}
+              <span>·</span>
+              <span className="opacity-60">{formatDateTime(p.opened_at)}</span>
+            </div>
+          </div>
+        ))}
+        {positions.length > 8 && (
+          <p className="text-[11px] text-base-content/40 font-mono text-center pt-1">
+            + {positions.length - 8} more — see full table below
+          </p>
+        )}
+      </div>
     </div>
   );
 }
