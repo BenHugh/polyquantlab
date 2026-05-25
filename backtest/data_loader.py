@@ -99,12 +99,20 @@ async def load_resolution(
         return None
     resolution_outcome = (row["resolution_outcome"] or "").lower()
     market_outcome = (row["market_outcome"] or "").lower()
-    # Heuristic: did this market's YES side win?
+    # Did this market's YES side win?
+    #
+    # IMPORTANT: our markets.outcome column is empty for all the crypto
+    # Up/Down markets (the discovery pipeline never populated it),
+    # which broke the original heuristic that joined resolution_outcome
+    # with market_outcome — the last clause was always False, so YES
+    # *never* won and Always-UP backtests reported 0% win rate even
+    # though ~50% of markets actually resolved Up. Fix: check
+    # resolution_outcome alone; market_outcome is just a backup for
+    # legacy bracket-style markets we no longer collect.
     yes_won = (
         resolution_outcome == "yes"
-        or resolution_outcome == market_outcome
         or resolution_outcome.startswith("up")
-        and "up" in market_outcome
+        or (market_outcome and resolution_outcome == market_outcome)
     )
     return Resolution(
         market_id=market_id,
