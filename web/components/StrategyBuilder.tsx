@@ -178,11 +178,16 @@ interface Condition {
 // section (Entry / TP / SL) is always a Group so we have a stable
 // container even when empty. Mirrors backtest/conditions.py's
 // `{"op": "AND"|"OR", "children": [...]}` wire format.
+//
+// Phase W: per-pair connectors. `connectors[i]` is how `children[i+1]`
+// joins to the accumulated result so far. When absent, all joins fall
+// back to `op` (Phase T behaviour). Length is `children.length - 1`.
 type GroupOp = "AND" | "OR";
 interface Group {
   id: string;
   op: GroupOp;
   children: Node[];
+  connectors?: GroupOp[];
 }
 type Node = Condition | Group;
 
@@ -613,36 +618,74 @@ export default function StrategyBuilder() {
     persist({ ...state, [section]: nextRoot });
   }
 
+  /** When appending a child to a group, also append a default
+   * connector. Default value of the new connector mirrors the last
+   * existing connector (or the group's default op when first added). */
+  function appendChild(g: Group, child: Node): Group {
+    const nextChildren = [...g.children, child];
+    if (nextChildren.length <= 1) {
+      return { ...g, children: nextChildren };
+    }
+    const existing = g.connectors ?? [];
+    const lastConnector = existing.length > 0 ? existing[existing.length - 1] : g.op;
+    const nextConnectors = [...existing, lastConnector];
+    return { ...g, children: nextChildren, connectors: nextConnectors };
+  }
+
   /** Append a condition to the group at `parentPath`. */
   function addCond(section: Section, parentPath: Path = []) {
     mutateSection(section, parentPath, (node) => {
       if (!isGroup(node)) return node;
-      return {
-        ...node,
-        children: [...node.children, newCondition("token_price")],
-      };
+      return appendChild(node, newCondition("token_price"));
     });
   }
   /** Append a nested group to the group at `parentPath`. */
   function addGroup(section: Section, parentPath: Path = []) {
     mutateSection(section, parentPath, (node) => {
       if (!isGroup(node)) return node;
-      return {
-        ...node,
-        children: [...node.children, newGroup("OR")],
-      };
+      return appendChild(node, newGroup("AND"));
     });
   }
-  /** Remove the node at `path`. Root group itself can't be removed. */
+  /** Remove the node at `path`. Root group itself can't be removed.
+   * Also removes the matching connector entry so length stays in sync. */
   function removeNode(section: Section, path: Path) {
-    if (path.length === 0) return; // refuse to delete root
-    mutateSection(section, path, () => null);
+    if (path.length === 0) return;
+    // First mutate the parent so we can also drop the corresponding
+    // connector (the generic mutateAt only touches children).
+    const parentPath = path.slice(0, -1);
+    const removedIdx = path[path.length - 1];
+    mutateSection(section, parentPath, (parent) => {
+      if (!isGroup(parent)) return parent;
+      const nextChildren = parent.children.filter((_, i) => i !== removedIdx);
+      const existing = parent.connectors;
+      if (!existing) {
+        return { ...parent, children: nextChildren };
+      }
+      // Connector[i] joins child[i+1] to child[i]. When child[removedIdx]
+      // is dropped, the connector immediately before it (index
+      // removedIdx-1) loses its right-hand operand. For removedIdx=0
+      // there's nothing to drop on the left; we drop connector[0]
+      // because it would have joined the (now-vanished) first child
+      // to what's-now-the-first child.
+      const dropAt = Math.max(0, removedIdx - 1);
+      const nextConnectors = existing.filter((_, i) => i !== dropAt);
+      return { ...parent, children: nextChildren, connectors: nextConnectors };
+    });
   }
-  /** Toggle a group's AND/OR op. */
-  function toggleGroupOp(section: Section, path: Path) {
-    mutateSection(section, path, (node) => {
+  /** Toggle the connector that joins children[idx+1] to children[idx]
+   * inside the group at `groupPath`. Initialises the connectors array
+   * from the group's default `op` on first interaction so the UI shows
+   * a coherent starting point. */
+  function toggleConnector(section: Section, groupPath: Path, connIdx: number) {
+    mutateSection(section, groupPath, (node) => {
       if (!isGroup(node)) return node;
-      return { ...node, op: node.op === "AND" ? "OR" : "AND" };
+      const need = Math.max(0, node.children.length - 1);
+      const base = node.connectors && node.connectors.length === need
+        ? [...node.connectors]
+        : Array.from({ length: need }, () => node.op);
+      if (connIdx < 0 || connIdx >= base.length) return node;
+      base[connIdx] = base[connIdx] === "AND" ? "OR" : "AND";
+      return { ...node, connectors: base };
     });
   }
   /** Patch a leaf condition at `path`. */
@@ -684,12 +727,67 @@ export default function StrategyBuilder() {
 
   /** Render a node tree as a flat one-line phrase. Nested groups get
    * wrapped in parens so precedence reads unambiguously. */
+  /** Extract just the "subject" prefix from a leaf — the part that
+   * repeats verbatim when consecutive leaves share the same param. */
+  function leafSubject(c: Condition): string {
+    const spec = PARAM_SPECS[c.type];
+    const sidePrefix = spec.hasSide ? `${c.side?.toUpperCase() ?? ""} ` : "";
+    const windowSuffix = spec.needsWindow ? ` (${c.window_sec}s window)` : "";
+    return `${sidePrefix}${spec.label}${windowSuffix}`;
+  }
+  /** Predicate tail — op + value + unit, without the subject. */
+  function leafPredicate(c: Condition): string {
+    const op = OP_LABELS[c.op] || c.op;
+    const spec = PARAM_SPECS[c.type];
+    const unit =
+      spec.unit === "usd" ? "$" :
+      spec.unit === "percent" ? "%" :
+      spec.unit === "seconds" ? "s" :
+      "";
+    return `${op} ${unit}${c.value}`;
+  }
+
+  /** Render a group's children with per-pair connectors + subject
+   * collapse. Two adjacent leaves with the same subject (e.g. both are
+   * "YES Token price") render the second one without re-stating the
+   * subject: "YES Token price ≥ 0.4 AND ≥ 0.5" instead of the
+   * repetitive "≥ 0.4 AND YES Token price ≥ 0.5". */
+  function humanChildren(g: Group): string {
+    if (g.children.length === 0) return "(no rules)";
+    if (g.children.length === 1) return humanNode(g.children[0]);
+    const parts: string[] = [];
+    let prevSubject: string | null = null;
+    g.children.forEach((child, i) => {
+      let rendered: string;
+      if (isGroup(child)) {
+        rendered = humanNode(child);
+        prevSubject = null;
+      } else {
+        const curSubj = leafSubject(child);
+        if (prevSubject !== null && curSubj === prevSubject && i > 0) {
+          rendered = leafPredicate(child);
+        } else {
+          rendered = humanCondition(child);
+        }
+        prevSubject = curSubj;
+      }
+      if (i === 0) {
+        parts.push(rendered);
+      } else {
+        const conn = (g.connectors && i - 1 < g.connectors.length)
+          ? g.connectors[i - 1]
+          : g.op;
+        parts.push(`${conn} ${rendered}`);
+      }
+    });
+    return parts.join(" ");
+  }
+
   function humanNode(n: Node): string {
     if (isGroup(n)) {
       if (n.children.length === 0) return "(no rules)";
-      const parts = n.children.map(humanNode);
-      if (parts.length === 1) return parts[0];
-      return "(" + parts.join(` ${n.op} `) + ")";
+      if (n.children.length === 1) return humanNode(n.children[0]);
+      return "(" + humanChildren(n) + ")";
     }
     return humanCondition(n);
   }
@@ -697,7 +795,7 @@ export default function StrategyBuilder() {
   function humanSection(root: Group): string | null {
     if (root.children.length === 0) return null;
     if (root.children.length === 1) return humanNode(root.children[0]);
-    return root.children.map(humanNode).join(` ${root.op} `);
+    return humanChildren(root);
   }
 
   const readsAs = useMemo(() => {
@@ -712,14 +810,18 @@ export default function StrategyBuilder() {
 
   // -- Submit ------------------------------------------------------------
 
-  /** Serialise the node tree for the backend. Simple AND-of-leaves
-   * sections emit the legacy flat-array form so existing log/result
-   * payloads stay readable; anything richer goes out as the explicit
-   * tree shape, which the Phase T evaluator handles natively. */
+  /** Serialise the node tree for the backend. The simplest case —
+   * AND across leaves with no per-pair connector overrides — emits
+   * the legacy flat-array form so old result/log readers stay clean.
+   * Anything with mixed connectors, nested groups, or root OR goes
+   * out as the explicit tree shape that Phase T+W evaluator handles. */
   function serialiseSection(root: Group): unknown {
-    const allLeavesAnd =
-      root.op === "AND" && root.children.every((c) => !isGroup(c));
-    if (allLeavesAnd) {
+    const allLeaves = root.children.every((c) => !isGroup(c));
+    const uniformAnd =
+      allLeaves
+      && root.op === "AND"
+      && (!root.connectors || root.connectors.every((c) => c === "AND"));
+    if (uniformAnd) {
       return root.children.map(stripIds);
     }
     return stripIds(root);
@@ -1125,7 +1227,7 @@ export default function StrategyBuilder() {
           onAddCond={(p) => addCond("entry", p)}
           onAddGroup={(p) => addGroup("entry", p)}
           onRemove={(p) => removeNode("entry", p)}
-          onToggleOp={(p) => toggleGroupOp("entry", p)}
+          onToggleConnector={(p, i) => toggleConnector("entry", p, i)}
           onPatchCond={(p, patch) => patchCond("entry", p, patch)}
         />
       </Section>
@@ -1162,7 +1264,7 @@ export default function StrategyBuilder() {
           onAddCond={(p) => addCond("takeProfit", p)}
           onAddGroup={(p) => addGroup("takeProfit", p)}
           onRemove={(p) => removeNode("takeProfit", p)}
-          onToggleOp={(p) => toggleGroupOp("takeProfit", p)}
+          onToggleConnector={(p, i) => toggleConnector("takeProfit", p, i)}
           onPatchCond={(p, patch) => patchCond("takeProfit", p, patch)}
         />
       </Section>
@@ -1183,7 +1285,7 @@ export default function StrategyBuilder() {
           onAddCond={(p) => addCond("stopLoss", p)}
           onAddGroup={(p) => addGroup("stopLoss", p)}
           onRemove={(p) => removeNode("stopLoss", p)}
-          onToggleOp={(p) => toggleGroupOp("stopLoss", p)}
+          onToggleConnector={(p, i) => toggleConnector("stopLoss", p, i)}
           onPatchCond={(p, patch) => patchCond("stopLoss", p, patch)}
         />
       </Section>
@@ -1316,7 +1418,9 @@ interface GroupHandlers {
   onAddCond: (path: Path) => void;
   onAddGroup: (path: Path) => void;
   onRemove: (path: Path) => void;
-  onToggleOp: (path: Path) => void;
+  /** Toggle the connector at `connIdx` inside the group at `groupPath`.
+   * connIdx[i] is the join between children[i] and children[i+1]. */
+  onToggleConnector: (groupPath: Path, connIdx: number) => void;
   onPatchCond: (path: Path, patch: Partial<Condition>) => void;
 }
 
@@ -1331,13 +1435,22 @@ function ConditionGroup({
   isRoot?: boolean;
 } & GroupHandlers) {
   const isEmpty = group.children.length === 0;
-  const pillTone =
-    group.op === "OR"
-      ? "bg-accent/15 border-accent/30 text-accent"
-      : "bg-primary/10 border-primary/25 text-primary";
-  const matchLabel =
-    group.op === "OR" ? "Match ANY of these" : "Match ALL of these";
-  const showHeader = group.children.length >= 2 || !isRoot;
+
+  /** Effective op for the connector between children[i] and
+   * children[i+1]. Falls back to the group's default `op` until the
+   * user toggles a specific connector (which materialises the array). */
+  function connAt(i: number): GroupOp {
+    if (group.connectors && i < group.connectors.length) {
+      return group.connectors[i];
+    }
+    return group.op;
+  }
+
+  function pillToneFor(op: GroupOp) {
+    return op === "OR"
+      ? "bg-accent/15 border-accent/30 text-accent hover:bg-accent/25"
+      : "bg-primary/10 border-primary/25 text-primary hover:bg-primary/20";
+  }
 
   return (
     <div
@@ -1347,39 +1460,26 @@ function ConditionGroup({
           : "space-y-2 pl-3 border-l-2 border-base-300/60 relative"
       }
     >
-      {/* Group op — ONE pill at the head, no mid-pills between siblings.
-        * Wording uses "Match ALL / ANY" instead of AND/OR jargon. Clicking
-        * toggles. Subtle help text reminds users that mixed precedence
-        * (A AND B OR C) needs an explicit sub-group. */}
-      {showHeader && (
+      {/* Nested group header — only the "remove group" affordance,
+        * since per-pair pills below carry the operator state.  Hidden
+        * on the root group. */}
+      {!isRoot && (
         <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] font-mono uppercase tracking-widest text-base-content/40">
+            sub-group
+          </span>
           <button
             type="button"
-            onClick={() => handlers.onToggleOp(path)}
-            className={`group/toggle inline-flex items-center gap-1.5 text-[11px] font-medium border rounded-md px-2.5 py-1 transition-colors ${pillTone} hover:brightness-110`}
-            title="Click to toggle: Match ALL (AND) ↔ Match ANY (OR). Add a sub-group for mixed precedence."
+            onClick={() => handlers.onRemove(path)}
+            className="text-[10px] text-base-content/40 hover:text-error transition-colors"
+            aria-label="Remove group"
+            title="Remove this sub-group"
           >
-            <span className="font-mono text-[9px] uppercase tracking-widest opacity-60 group-hover/toggle:opacity-80">
-              {group.op}
-            </span>
-            <span>{matchLabel}</span>
+            remove group
           </button>
-          {!isRoot && (
-            <button
-              type="button"
-              onClick={() => handlers.onRemove(path)}
-              className="text-[10px] text-base-content/40 hover:text-error transition-colors"
-              aria-label="Remove group"
-              title="Remove group"
-            >
-              remove group
-            </button>
-          )}
         </div>
       )}
 
-      {/* Children — flat list, no mid-pills (the head pill already
-        * declares the join semantic; mid-pills were ambiguous). */}
       {isEmpty ? (
         <div className="text-center text-xs text-base-content/40 py-3 font-mono">
           No conditions yet — add one below
@@ -1389,8 +1489,26 @@ function ConditionGroup({
           {group.children.map((child, idx) => {
             const childPath = [...path, idx];
             const childKey = (child as Node).id ?? idx;
+            // Per-pair connector pill — sits between children[idx-1]
+            // and children[idx]. Click toggles JUST that pair's op,
+            // not the whole group. First child has no connector
+            // (nothing to join to on its left).
+            const showConnector = idx > 0;
+            const connOp = showConnector ? connAt(idx - 1) : group.op;
             return (
               <div key={childKey} className="group">
+                {showConnector && (
+                  <div className="flex items-center justify-center -my-0.5 py-0.5">
+                    <button
+                      type="button"
+                      onClick={() => handlers.onToggleConnector(path, idx - 1)}
+                      className={`text-[10px] font-mono uppercase tracking-widest border rounded px-2 py-0.5 transition-colors ${pillToneFor(connOp)}`}
+                      title="Click to toggle this connector between AND / OR"
+                    >
+                      {connOp}
+                    </button>
+                  </div>
+                )}
                 {isGroup(child) ? (
                   <ConditionGroup group={child} path={childPath} {...handlers} />
                 ) : (

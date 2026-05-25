@@ -365,33 +365,71 @@ def evaluate_node(
     sibling truth. Same convention TradingView uses on its multi-
     condition alerts."""
     if _is_group(node):
-        op = node["op"]
         children = node["children"] or []
-        if op == "AND":
-            if not children:
-                return False
-            for child in children:
-                if not evaluate_node(
-                    child, snapshot,
-                    resolution_at=resolution_at,
-                    market_open=market_open,
-                    history=history,
-                    cross_state=cross_state,
-                ):
-                    return False
-            return True
-        elif op == "OR":
-            for child in children:
-                if evaluate_node(
-                    child, snapshot,
-                    resolution_at=resolution_at,
-                    market_open=market_open,
-                    history=history,
-                    cross_state=cross_state,
-                ):
-                    return True
+        if not children:
             return False
-        return False
+        # Per-pair connectors (Phase W) — `connectors[i]` says how
+        # children[i+1] joins to the accumulated result so far. Length
+        # is children.length - 1. When the field is missing, fall back
+        # to the group's `op` for every join (Phase T behaviour). The
+        # back-compat path matters for stored backtests; without it
+        # any saved Redis job from before W stops working.
+        connectors = node.get("connectors")
+        default_op = node["op"]
+
+        def join_at(i: int) -> str:
+            if isinstance(connectors, list) and i < len(connectors):
+                v = connectors[i]
+                if v in ("AND", "OR"):
+                    return v
+            return default_op
+
+        # Evaluate strict left-to-right. With normal precedence the
+        # expression `A AND B OR C` would parse as `(A AND B) OR C` —
+        # we apply that ordering literally. AND short-circuits to False;
+        # OR short-circuits to True; combined chains compute as
+        # `((A op1 B) op2 C) op3 D`. Same convention TradingView uses
+        # for chained alert conditions.
+        result = evaluate_node(
+            children[0], snapshot,
+            resolution_at=resolution_at,
+            market_open=market_open,
+            history=history,
+            cross_state=cross_state,
+        )
+        for i, child in enumerate(children[1:]):
+            j_op = join_at(i)
+            # Short-circuit BEFORE evaluating the next child so we
+            # match the AND-empty / OR-empty semantics from Phase T.
+            if j_op == "AND" and not result:
+                # Still walk the child to keep cross-state in sync,
+                # but ignore its truth — we already know the join is False.
+                evaluate_node(
+                    child, snapshot,
+                    resolution_at=resolution_at,
+                    market_open=market_open,
+                    history=history,
+                    cross_state=cross_state,
+                )
+                continue
+            if j_op == "OR" and result:
+                # Conservative: same short-circuit pattern as AND/False.
+                # We do NOT update cross-state on the skipped child for
+                # OR — matching the same call site convention from the
+                # previous OR branch comment.
+                continue
+            child_val = evaluate_node(
+                child, snapshot,
+                resolution_at=resolution_at,
+                market_open=market_open,
+                history=history,
+                cross_state=cross_state,
+            )
+            if j_op == "AND":
+                result = result and child_val
+            else:
+                result = result or child_val
+        return result
     # Leaf — single primitive
     return evaluate_one(
         node, snapshot,
@@ -472,29 +510,96 @@ _OP_TO_EN = {
 }
 
 
-def _humanise_condition(c: dict[str, Any]) -> str:
+def _leaf_subject(c: dict[str, Any]) -> str | None:
+    """The leading subject of a leaf clause, used to collapse repeated
+    subjects on adjacent siblings. Returns None for unknown leaves (we
+    fall back to the full sentence)."""
+    ctype = c.get("type")
+    side = (c.get("side") or "").upper()
+    window = c.get("window_sec", 60)
+    if ctype == TYPE_TOKEN_PRICE:
+        return f"{side} token price"
+    if ctype == TYPE_SPREAD:
+        return f"{side} spread"
+    if ctype == TYPE_TIME_TO_RESOLUTION:
+        return "time to resolution"
+    if ctype == TYPE_TIME_SINCE_OPEN:
+        return "time since open"
+    if ctype == TYPE_COIN_MOVE_USD or ctype == TYPE_COIN_MOVE_PCT:
+        return "coin move since open"
+    if ctype == TYPE_COIN_VOLATILITY:
+        return f"coin price σ over {window}s"
+    if ctype == TYPE_TOKEN_VOLATILITY:
+        return f"{side} token σ over {window}s"
+    return None
+
+
+def _leaf_predicate(c: dict[str, Any]) -> str:
+    """The op+value tail of a leaf — the bit you can repeat without the
+    subject and still read cleanly: '≥ 0.5'."""
     ctype = c.get("type")
     op = c.get("op", OP_EQ)
     val = c.get("value")
-    side = (c.get("side") or "").upper()
     op_en = _OP_TO_EN.get(op, op)
-    if ctype == TYPE_TOKEN_PRICE:
-        return f"{side} token price {op_en} {val}"
-    if ctype == TYPE_SPREAD:
-        return f"{side} spread {op_en} {val}"
-    if ctype == TYPE_TIME_TO_RESOLUTION:
-        return f"time to resolution {op_en} {val}s"
-    if ctype == TYPE_TIME_SINCE_OPEN:
-        return f"time since open {op_en} {val}s"
-    if ctype == TYPE_COIN_MOVE_USD:
-        return f"coin move since open {op_en} ${val}"
-    if ctype == TYPE_COIN_MOVE_PCT:
-        return f"coin move since open {op_en} {val}%"
-    if ctype == TYPE_COIN_VOLATILITY:
-        return f"coin price σ over {c.get('window_sec', 60)}s {op_en} {val}"
-    if ctype == TYPE_TOKEN_VOLATILITY:
-        return f"{side} token σ over {c.get('window_sec', 60)}s {op_en} {val}"
-    return f"{ctype} {op} {val}"
+    suffix = ""
+    if ctype == TYPE_TIME_TO_RESOLUTION or ctype == TYPE_TIME_SINCE_OPEN:
+        suffix = "s"
+    elif ctype == TYPE_COIN_MOVE_USD:
+        # USD prefix instead of suffix — handle inline below.
+        return f"{op_en} ${val}"
+    elif ctype == TYPE_COIN_MOVE_PCT:
+        suffix = "%"
+    return f"{op_en} {val}{suffix}"
+
+
+def _humanise_condition(c: dict[str, Any]) -> str:
+    subj = _leaf_subject(c)
+    pred = _leaf_predicate(c)
+    if subj is None:
+        return f"{c.get('type')} {c.get('op')} {c.get('value')}"
+    return f"{subj} {pred}"
+
+
+def _humanise_children(children: list[Any], connectors: list[str] | None, default_op: str) -> str:
+    """Render a group's children with per-pair joins, collapsing the
+    subject when adjacent leaves share it. Example: instead of
+    `YES token price ≥ 0.4 AND YES token price ≥ 0.5 AND YES token
+    price ≥ 0.6`, render `YES token price ≥ 0.4 AND ≥ 0.5 AND ≥ 0.6`.
+    """
+    if not children:
+        return "(no rules)"
+
+    def conn_at(i: int) -> str:
+        if connectors and i < len(connectors):
+            v = connectors[i]
+            if v in ("AND", "OR"):
+                return v
+        return default_op
+
+    parts: list[str] = []
+    prev_subject: str | None = None
+    for i, child in enumerate(children):
+        if _is_group(child):
+            rendered = _humanise_node(child)
+            prev_subject = None  # group breaks the subject-collapse streak
+        else:
+            cur_subject = _leaf_subject(child)
+            if (
+                prev_subject is not None
+                and cur_subject == prev_subject
+                and i > 0
+            ):
+                # Reuse subject from previous leaf — render only the
+                # predicate ("≥ 0.5") to avoid stutter.
+                rendered = _leaf_predicate(child)
+            else:
+                rendered = _humanise_condition(child)
+            prev_subject = cur_subject
+        if i == 0:
+            parts.append(rendered)
+        else:
+            parts.append(f"{conn_at(i - 1)} {rendered}")
+    return " ".join(parts)
 
 
 def _humanise_node(node: Any) -> str:
@@ -504,15 +609,14 @@ def _humanise_node(node: Any) -> str:
     nested: `((A AND B) OR C) AND D`. Top-level callers strip the outer
     parens for readability (see `humanise`)."""
     if _is_group(node):
-        op = node["op"]
         children = node.get("children") or []
         if not children:
             return "(no rules)"
-        parts = [_humanise_node(c) for c in children]
-        joiner = f" {op} "
-        if len(parts) == 1:
-            return parts[0]
-        return "(" + joiner.join(parts) + ")"
+        if len(children) == 1:
+            return _humanise_node(children[0])
+        connectors = node.get("connectors")
+        rendered = _humanise_children(children, connectors, node.get("op", "AND"))
+        return f"({rendered})"
     return _humanise_condition(node)
 
 
@@ -525,15 +629,18 @@ def _humanise_section(section: Any) -> str | None:
     if isinstance(section, list):
         if not section:
             return None
-        return " AND ".join(_humanise_condition(c) for c in section)
+        return _humanise_children(section, connectors=None, default_op="AND")
     if _is_group(section):
-        if not section.get("children"):
+        children = section.get("children") or []
+        if not children:
             return None
-        rendered = _humanise_node(section)
-        # Strip the outer parens we added for the implicit wrap.
-        if rendered.startswith("(") and rendered.endswith(")"):
-            return rendered[1:-1]
-        return rendered
+        if len(children) == 1:
+            return _humanise_node(children[0])
+        return _humanise_children(
+            children,
+            connectors=section.get("connectors"),
+            default_op=section.get("op", "AND"),
+        )
     return None
 
 
