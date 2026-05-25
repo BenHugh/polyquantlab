@@ -206,6 +206,136 @@ const newCondition = (
   };
 };
 
+// ─── Templates registry ─────────────────────────────────────────────
+// Each template returns a partial BuilderState that's merged on top of
+// DEFAULT_STATE. Keep the list small + named after what real bot
+// traders look for; the goal is to lower the cold-start gap so a new
+// user has 8 useful strategies to compare before they have to invent
+// their own. Adapted from the patterns we see on r/Polymarket and
+// Polymarket Discord quant channels.
+interface Template {
+  key: string;
+  name: string;
+  description: string;
+  build: () => Partial<BuilderState>;
+}
+
+const TEMPLATES: Template[] = [
+  {
+    key: "buy_and_hold_up",
+    name: "Buy & Hold UP",
+    description:
+      "No conditions — enter at the first fillable snapshot, hold to resolution. Baseline to compare other strategies against.",
+    build: () => ({ tradeLogic: "always_up", entry: [], takeProfit: [], stopLoss: [] }),
+  },
+  {
+    key: "buy_and_hold_down",
+    name: "Buy & Hold DOWN",
+    description:
+      "Mirror of Buy & Hold UP — bet DOWN every market. Useful for testing whether the data window is biased.",
+    build: () => ({ tradeLogic: "always_down", entry: [], takeProfit: [], stopLoss: [] }),
+  },
+  {
+    key: "threshold_buy_cheap_up",
+    name: "Threshold buy (cheap UP)",
+    description:
+      "Buy UP when its price drops below 30¢ — classic contrarian mean-reversion.",
+    build: () => ({
+      tradeLogic: "always_up",
+      entry: [{ ...newCondition("token_price", "yes"), op: "<=", value: 0.3 }],
+    }),
+  },
+  {
+    key: "momentum_follow",
+    name: "Momentum (BTC rallying)",
+    description:
+      "Buy UP when BTC has rallied at least $50 since market open. Rides the trend.",
+    build: () => ({
+      tradeLogic: "always_up",
+      entry: [{ ...newCondition("coin_move_since_open_usd"), op: ">=", value: 50 }],
+    }),
+  },
+  {
+    key: "contrarian_fade",
+    name: "Contrarian fade",
+    description:
+      "Bet DOWN when BTC has rallied $100+ — fade overextended moves on the assumption short windows mean-revert.",
+    build: () => ({
+      tradeLogic: "always_down",
+      entry: [{ ...newCondition("coin_move_since_open_usd"), op: ">=", value: 100 }],
+    }),
+  },
+  {
+    key: "last_minute_scalp",
+    name: "Last-minute scalp",
+    description:
+      "Enter when there are 30 seconds or less until resolution. Tries to capture the late-resolution skew.",
+    build: () => ({
+      tradeLogic: "always_up",
+      entry: [{ ...newCondition("time_to_resolution_s"), op: "<=", value: 30 }],
+    }),
+  },
+  {
+    key: "tight_book_only",
+    name: "Tight-book filter",
+    description:
+      "Only enter when the UP order book is tight (≤ 3¢ spread). Avoids the wide-book trap that ruins walk-book fills.",
+    build: () => ({
+      tradeLogic: "always_up",
+      entry: [{ ...newCondition("spread", "yes"), op: "<=", value: 0.03 }],
+    }),
+  },
+  {
+    key: "breakout_50",
+    name: "Breakout 50¢",
+    description:
+      "Buy UP the moment its price crosses above 50¢ — event-based momentum trigger.",
+    build: () => ({
+      tradeLogic: "always_up",
+      entry: [{ ...newCondition("token_price", "yes"), op: "crosses_above", value: 0.5 }],
+    }),
+  },
+  {
+    key: "mean_reversion_tp_sl",
+    name: "Mean reversion (TP + SL)",
+    description:
+      "Buy UP at ≤30¢, take profit at 50¢, stop loss at 15¢. Full round-trip example showing TP/SL exits.",
+    build: () => ({
+      tradeLogic: "always_up",
+      entry: [{ ...newCondition("token_price", "yes"), op: "<=", value: 0.3 }],
+      takeProfit: [{ ...newCondition("token_price", "yes"), op: ">=", value: 0.5 }],
+      stopLoss: [{ ...newCondition("token_price", "yes"), op: "<=", value: 0.15 }],
+    }),
+  },
+];
+
+const SAVED_KEY = "pql-saved-strategies";
+
+interface SavedStrategy {
+  id: string;
+  name: string;
+  saved_at: string;
+  state: BuilderState;
+}
+
+function loadSaved(): SavedStrategy[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(SAVED_KEY);
+    return raw ? (JSON.parse(raw) as SavedStrategy[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSaved(list: SavedStrategy[]): void {
+  try {
+    localStorage.setItem(SAVED_KEY, JSON.stringify(list));
+  } catch {
+    // ignore quota errors — saved strategies are nice-to-have
+  }
+}
+
 const DEFAULT_STATE: BuilderState = {
   ticker: "BTC",
   eventType: "5m",
@@ -257,11 +387,52 @@ export default function StrategyBuilder() {
   // doesn't expose them either, and the universe loader's "last N
   // markets" default is what most users want.
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [saved, setSaved] = useState<SavedStrategy[]>([]);
+  // Picker panel open state — single dropdown housing both Templates
+  // (read-only presets) and My Strategies (user-saved).
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     const stored = loadStored();
     if (stored) setState(stored);
+    setSaved(loadSaved());
   }, []);
+
+  function applyTemplate(t: Template) {
+    persist({ ...DEFAULT_STATE, ...t.build() });
+    setPickerOpen(false);
+    toast.success(`Loaded: ${t.name}`);
+  }
+
+  function saveCurrent() {
+    const name = window.prompt(
+      "Save current strategy as:",
+      `Custom ${new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
+    );
+    if (!name) return;
+    const rec: SavedStrategy = {
+      id: Math.random().toString(36).slice(2),
+      name: name.slice(0, 60),
+      saved_at: new Date().toISOString(),
+      state,
+    };
+    const next = [rec, ...saved].slice(0, 20); // cap at 20 saved
+    writeSaved(next);
+    setSaved(next);
+    toast.success("Saved");
+  }
+
+  function loadSavedStrategy(rec: SavedStrategy) {
+    persist({ ...DEFAULT_STATE, ...rec.state });
+    setPickerOpen(false);
+    toast.success(`Loaded: ${rec.name}`);
+  }
+
+  function deleteSaved(id: string) {
+    const next = saved.filter((s) => s.id !== id);
+    writeSaved(next);
+    setSaved(next);
+  }
 
   function persist(next: BuilderState) {
     setState(next);
@@ -401,6 +572,109 @@ export default function StrategyBuilder() {
 
   return (
     <div className="space-y-5">
+      {/* Strategy picker — Templates + My Strategies + Save current */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <button
+            onClick={() => setPickerOpen((v) => !v)}
+            className="btn btn-sm rounded-lg border border-base-300 bg-base-200/40 hover:bg-base-200"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+            </svg>
+            Load template
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="6,9 12,15 18,9" />
+            </svg>
+          </button>
+          {pickerOpen && (
+            <>
+              <button
+                className="fixed inset-0 z-10 cursor-default"
+                aria-label="Close picker"
+                onClick={() => setPickerOpen(false)}
+              />
+              <div className="absolute left-0 top-full mt-1 z-20 w-96 max-h-[28rem] overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-xl">
+                <div className="px-3 py-2 text-[10px] font-mono uppercase tracking-widest text-base-content/40 border-b border-base-300/60">
+                  Templates
+                </div>
+                {TEMPLATES.map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => applyTemplate(t)}
+                    className="w-full text-left px-3 py-2 hover:bg-base-200/60 border-b border-base-300/40 last:border-b-0"
+                  >
+                    <div className="text-sm font-medium">{t.name}</div>
+                    <div className="text-xs text-base-content/60 mt-0.5 leading-snug">
+                      {t.description}
+                    </div>
+                  </button>
+                ))}
+                {saved.length > 0 && (
+                  <>
+                    <div className="px-3 py-2 mt-2 text-[10px] font-mono uppercase tracking-widest text-base-content/40 border-y border-base-300/60 bg-base-200/40">
+                      My strategies
+                    </div>
+                    {saved.map((s) => (
+                      <div
+                        key={s.id}
+                        className="flex items-center px-3 py-2 hover:bg-base-200/60 border-b border-base-300/40 last:border-b-0 gap-2"
+                      >
+                        <button
+                          onClick={() => loadSavedStrategy(s)}
+                          className="flex-1 text-left"
+                        >
+                          <div className="text-sm font-medium">{s.name}</div>
+                          <div className="text-xs text-base-content/40 font-mono mt-0.5">
+                            {new Date(s.saved_at).toLocaleString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </div>
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSaved(s.id);
+                          }}
+                          className="btn btn-ghost btn-xs btn-square text-base-content/40 hover:text-error"
+                          aria-label="Delete saved strategy"
+                          title="Delete"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        <button
+          onClick={saveCurrent}
+          className="btn btn-sm btn-ghost rounded-lg"
+          title="Save current builder state to local storage"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+            <polyline points="17 21 17 13 7 13 7 21" />
+            <polyline points="7 3 7 8 15 8" />
+          </svg>
+          Save current
+        </button>
+        <span className="text-[11px] text-base-content/40 font-mono ml-auto">
+          {saved.length > 0
+            ? `${saved.length} saved`
+            : "Saved to this browser only"}
+        </span>
+      </div>
+
       <Section
         n="01"
         title="Setup"

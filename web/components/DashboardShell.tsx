@@ -55,11 +55,6 @@ const NAV: NavItem[] = [
     icon: <IconBlocks />,
   },
   {
-    href: "/dashboard/backtest",
-    label: "Backtest",
-    icon: <IconCharts />,
-  },
-  {
     href: "/dashboard/backtest/sweep",
     label: "Sweep",
     icon: <IconGridDense />,
