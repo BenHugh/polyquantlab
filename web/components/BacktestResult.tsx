@@ -197,38 +197,102 @@ function ResultView({
 }
 
 function StatsGrid({ result }: { result: BacktestResultBody }) {
+  // Tail + ratio metrics aren't on the result body itself — derive them
+  // from the trade list here so we don't have to migrate the backend
+  // response schema mid-flight. All trades carry a `pnl` field on
+  // Phase H1+ results, so this is safe for anything backtested in the
+  // last few weeks.
+  const tradePnls = result.trades
+    .map((t) => (typeof t.pnl === "number" ? t.pnl : null))
+    .filter((p): p is number => p !== null);
+
+  const best = tradePnls.length ? Math.max(...tradePnls) : null;
+  const worst = tradePnls.length ? Math.min(...tradePnls) : null;
+  const grossWins = tradePnls.filter((p) => p > 0).reduce((a, b) => a + b, 0);
+  const grossLosses = Math.abs(
+    tradePnls.filter((p) => p < 0).reduce((a, b) => a + b, 0),
+  );
+  const profitFactor =
+    grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : null;
+  // Calmar (per-trade flavour): a strategy that earns N times its worst
+  // drawdown is the kind of thing institutional quants screen on first.
+  const calmar =
+    result.max_drawdown !== 0
+      ? result.total_pnl / Math.abs(result.max_drawdown)
+      : null;
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-      <Stat
-        label="Total PnL"
-        value={`$${result.total_pnl.toFixed(2)}`}
-        accent={result.total_pnl >= 0 ? "success" : "error"}
-      />
-      <Stat label="Fees" value={`$${result.total_fees.toFixed(2)}`} />
-      <Stat
-        label="Win rate"
-        value={`${(result.win_rate * 100).toFixed(1)}%`}
-      />
-      <Stat
-        label="Sharpe"
-        value={result.sharpe != null ? result.sharpe.toFixed(2) : "—"}
-      />
-      <Stat
-        label="Max drawdown"
-        value={`$${result.max_drawdown.toFixed(2)}`}
-        accent={result.max_drawdown > 0 ? "error" : undefined}
-      />
-      <Stat label="Markets" value={result.n_markets.toString()} />
-      <Stat label="Trades" value={result.n_trades.toString()} />
-      <Stat
-        label="PnL / trade"
-        value={
-          result.n_trades > 0
-            ? `$${(result.total_pnl / result.n_trades).toFixed(2)}`
-            : "—"
-        }
-      />
-    </div>
+    <>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Stat
+          label="Total PnL"
+          value={`$${result.total_pnl.toFixed(2)}`}
+          accent={result.total_pnl >= 0 ? "success" : "error"}
+        />
+        <Stat label="Fees" value={`$${result.total_fees.toFixed(2)}`} />
+        <Stat
+          label="Win rate"
+          value={`${(result.win_rate * 100).toFixed(1)}%`}
+        />
+        <Stat
+          label="Sharpe"
+          value={result.sharpe != null ? result.sharpe.toFixed(2) : "—"}
+        />
+        <Stat
+          label="Max drawdown"
+          value={`$${result.max_drawdown.toFixed(2)}`}
+          accent={result.max_drawdown > 0 ? "error" : undefined}
+        />
+        <Stat label="Trades" value={result.n_trades.toString()} />
+        <Stat
+          label="PnL / trade"
+          value={
+            result.n_trades > 0
+              ? `$${(result.total_pnl / result.n_trades).toFixed(2)}`
+              : "—"
+          }
+        />
+        <Stat
+          label="Profit factor"
+          value={
+            profitFactor === null
+              ? "—"
+              : profitFactor === Infinity
+                ? "∞"
+                : profitFactor.toFixed(2)
+          }
+          accent={
+            profitFactor === null || profitFactor === Infinity
+              ? undefined
+              : profitFactor >= 1
+                ? "success"
+                : "error"
+          }
+        />
+      </div>
+
+      {/* Tail row — separate so it visually reads as "secondary detail" */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+        <Stat
+          label="Best trade"
+          value={best !== null ? `+$${best.toFixed(2)}` : "—"}
+          accent={best !== null && best > 0 ? "success" : undefined}
+        />
+        <Stat
+          label="Worst trade"
+          value={worst !== null ? `$${worst.toFixed(2)}` : "—"}
+          accent={worst !== null && worst < 0 ? "error" : undefined}
+        />
+        <Stat
+          label="Calmar"
+          value={calmar !== null ? calmar.toFixed(2) : "—"}
+          accent={
+            calmar === null ? undefined : calmar >= 0 ? "success" : "error"
+          }
+        />
+        <Stat label="Markets" value={result.n_markets.toString()} />
+      </div>
+    </>
   );
 }
 
@@ -303,18 +367,23 @@ function PnLChart({ trades }: { trades: Trade[] }) {
 
   // Build path. Also build a fill polygon between the curve and the zero
   // line so the equity area is visually obvious.
-  const path = cum
-    .map((v, i) => {
-      const x = i * step;
-      const y = height - ((v - lo) / range) * height;
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+  // Build path as a monotone-cubic spline (Steffen, 1990 — produces smooth
+  // curves that *never overshoot* the underlying data points, unlike
+  // generic Bezier interpolation which can invent fake humps between
+  // samples). For a P&L curve that matters: a Bezier would visually
+  // imply equity dips that didn't actually happen, which is dishonest
+  // when the chart is the user's primary signal of strategy quality.
+  // 50 trade segments still read as "smooth" without the lie.
+  const points = cum.map((v, i) => ({
+    x: i * step,
+    y: height - ((v - lo) / range) * height,
+  }));
+  const path = monotoneCubicPath(points);
 
-  // Filled polygon (only used when we have real PnL)
+  const lastX = (cum.length - 1) * step;
   const fillPath =
     hasPnl && cum.length >= 2
-      ? `${path} L${(cum.length - 1) * step},${yZero} L0,${yZero} Z`
+      ? `${path} L${lastX.toFixed(1)},${yZero} L0,${yZero} Z`
       : null;
 
   const finalValue = cum[cum.length - 1];
@@ -510,4 +579,51 @@ function formatPx(n: number): string {
   if (n >= 1000) return n.toFixed(0);
   if (n >= 1) return n.toFixed(2);
   return n.toFixed(4);
+}
+
+// Monotone-cubic SVG path. Steffen (1990) / d3.curveMonotoneX, inlined so
+// we don't pull a chart lib for one chart. The invariant is the
+// important one: tangents are chosen so the spline never overshoots a
+// local extremum. For an equity curve that means we'll never visually
+// imply a dip that didn't happen between two real trade points.
+function monotoneCubicPath(pts: { x: number; y: number }[]): string {
+  if (pts.length === 0) return "";
+  if (pts.length === 1) return `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+
+  const n = pts.length;
+  // Slopes between adjacent points.
+  const dx: number[] = [];
+  const dy: number[] = [];
+  const m: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx.push(pts[i + 1].x - pts[i].x);
+    dy.push(pts[i + 1].y - pts[i].y);
+    m.push(dy[i] / (dx[i] || 1));
+  }
+
+  // Per-point tangents (Fritsch-Carlson).
+  const tangents: number[] = new Array(n);
+  tangents[0] = m[0];
+  tangents[n - 1] = m[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    if (m[i - 1] * m[i] <= 0) {
+      // Sign change at this point → flat tangent prevents overshoot.
+      tangents[i] = 0;
+    } else {
+      const w1 = 2 * dx[i] + dx[i - 1];
+      const w2 = dx[i] + 2 * dx[i - 1];
+      tangents[i] = (w1 + w2) / (w1 / m[i - 1] + w2 / m[i]);
+    }
+  }
+
+  let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i];
+    const x1 = pts[i].x + h / 3;
+    const y1 = pts[i].y + (tangents[i] * h) / 3;
+    const x2 = pts[i + 1].x - h / 3;
+    const y2 = pts[i + 1].y - (tangents[i + 1] * h) / 3;
+    d += ` C${x1.toFixed(1)},${y1.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)} ${pts[i + 1].x.toFixed(1)},${pts[i + 1].y.toFixed(1)}`;
+  }
+  return d;
 }
