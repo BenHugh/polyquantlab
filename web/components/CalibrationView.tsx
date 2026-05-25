@@ -391,6 +391,7 @@ function CalibrationChart({
               y={H - PAD + 16}
               textAnchor="middle"
               fontSize="10"
+              fill="currentColor"
               opacity={0.6}
             >
               {Math.round(v * 100)}%
@@ -400,6 +401,7 @@ function CalibrationChart({
               y={y(v) + 3}
               textAnchor="end"
               fontSize="10"
+              fill="currentColor"
               opacity={0.6}
             >
               {Math.round(v * 100)}%
@@ -411,6 +413,7 @@ function CalibrationChart({
           y={H - 8}
           textAnchor="middle"
           fontSize="11"
+          fill="currentColor"
           opacity={0.7}
         >
           Implied Up probability (Polymarket)
@@ -420,6 +423,7 @@ function CalibrationChart({
           y={H / 2}
           textAnchor="middle"
           fontSize="11"
+          fill="currentColor"
           opacity={0.7}
           transform={`rotate(-90 12 ${H / 2})`}
         >
@@ -457,6 +461,7 @@ function CalibrationChart({
                 y={cy - r - 2}
                 textAnchor="middle"
                 fontSize="9"
+                fill="currentColor"
                 opacity={0.65}
               >
                 n={b.n_markets}
