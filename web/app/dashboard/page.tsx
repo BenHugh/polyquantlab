@@ -98,13 +98,15 @@ function Card({
   return (
     <Link
       href={href}
-      className={`hover-card-lift block rounded-xl border p-5 bg-base-200/40 ${
-        accent ? "border-primary/30" : "border-base-300"
+      className={`feature-card group block rounded-xl p-5 ${
+        accent
+          ? "gradient-border bg-base-200/30 glow-card"
+          : "border border-base-300/60 bg-base-200/30"
       }`}
     >
       <div className="flex items-center justify-between mb-2">
         <h3 className="font-semibold tracking-tight">{title}</h3>
-        <span className="text-base-content/40 group-hover:text-primary transition-colors">
+        <span className="text-base-content/30 group-hover:text-primary group-hover:translate-x-0.5 transition-all">
           →
         </span>
       </div>

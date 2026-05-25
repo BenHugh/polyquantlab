@@ -161,6 +161,37 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Slightly bolder, tracked headlines — using Inter's tighter tracking
+   for the larger sizes mimics Linear / Vercel's typographic feel. */
+h1, h2, h3, h4 {
+  letter-spacing: -0.012em;
+}
+h1 { letter-spacing: -0.022em; }
+
+/* Cleaner data tables — used everywhere we render a list of rows. */
+table {
+  font-size: 0.875rem;
+}
+table thead {
+  background: transparent;
+}
+table thead th {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: oklch(70% 0.005 250 / 0.7);
+  border-bottom: 1px solid oklch(28% 0.013 250 / 0.6);
+}
+table tbody tr {
+  border-bottom: 1px solid oklch(24% 0.015 250 / 0.4);
+}
+table tbody tr:last-child {
+  border-bottom: none;
+}
+table tbody tr:hover {
+  background: oklch(20% 0.014 250 / 0.4);
+}
+
 /* Tighten button capitalisation — DaisyUI's default uppercase-y look
    feels dated. */
 .btn {
@@ -244,4 +275,165 @@ progress::-webkit-progress-value {
     linear-gradient(to right, oklch(24% 0.015 250 / 0.4) 1px, transparent 1px),
     linear-gradient(to bottom, oklch(24% 0.015 250 / 0.4) 1px, transparent 1px);
   background-size: auto, auto, 48px 48px, 48px 48px;
+}
+
+/* ============================================================================
+ * "Aurora" hero background — Lovable / Vercel-V0 style. Multiple soft
+ * radial blobs in the brand colours, blurred together, animated.
+ * Use on marketing pages only — too busy for dashboard chrome.
+ * ============================================================================ */
+.aurora-bg {
+  position: relative;
+  isolation: isolate;
+  background-color: oklch(13% 0.012 250);
+}
+.aurora-bg::before {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 50% 35% at 20% 30%, oklch(70% 0.18 155 / 0.18), transparent 60%),
+    radial-gradient(ellipse 45% 30% at 80% 20%, oklch(65% 0.13 220 / 0.16), transparent 60%),
+    radial-gradient(ellipse 40% 30% at 60% 80%, oklch(72% 0.15 70 / 0.10), transparent 60%);
+  filter: blur(50px);
+  animation: aurora-drift 28s ease-in-out infinite alternate;
+}
+.aurora-bg::after {
+  /* Fine grid on top of the aurora — keeps a "data product" feel
+     even with the colourful blobs underneath. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(to right, oklch(24% 0.015 250 / 0.5) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(24% 0.015 250 / 0.5) 1px, transparent 1px),
+    linear-gradient(180deg, transparent, oklch(13% 0.012 250) 95%);
+  background-size: 60px 60px, 60px 60px, auto;
+  pointer-events: none;
+}
+@keyframes aurora-drift {
+  0%   { transform: translate(0, 0) scale(1); }
+  50%  { transform: translate(2%, -3%) scale(1.05); }
+  100% { transform: translate(-2%, 2%) scale(0.97); }
+}
+
+/* ============================================================================
+ * Glass surfaces — frosted-card pattern. Used on premium feature cards
+ * + the sticky header. Don't overuse: dashboard data tables should
+ * stay solid for legibility.
+ * ============================================================================ */
+.glass {
+  background-color: oklch(19% 0.014 250 / 0.5);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid oklch(28% 0.013 250 / 0.6);
+}
+.glass-strong {
+  background-color: oklch(17% 0.013 250 / 0.75);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid oklch(30% 0.013 250 / 0.5);
+}
+
+/* ============================================================================
+ * Coloured glows — replace boring black drop-shadows with brand-tinted
+ * ones on important CTAs and feature cards. Subtle, never neon.
+ * ============================================================================ */
+.glow-primary {
+  box-shadow:
+    0 1px 0 0 oklch(100% 0 0 / 0.04) inset,
+    0 10px 40px -10px oklch(70% 0.18 155 / 0.35),
+    0 4px 18px -6px oklch(70% 0.18 155 / 0.20);
+}
+.glow-primary:hover {
+  box-shadow:
+    0 1px 0 0 oklch(100% 0 0 / 0.06) inset,
+    0 14px 50px -10px oklch(70% 0.18 155 / 0.45),
+    0 6px 22px -6px oklch(70% 0.18 155 / 0.30);
+}
+.glow-card {
+  box-shadow:
+    0 1px 0 0 oklch(100% 0 0 / 0.03) inset,
+    0 20px 60px -20px oklch(70% 0.18 155 / 0.10);
+}
+
+/* ============================================================================
+ * Big "halo" effect for the primary CTA button. Used sparingly — the
+ * landing-page "Start free" and pricing "Subscribe" buttons.
+ * ============================================================================ */
+.btn-halo {
+  position: relative;
+  isolation: isolate;
+}
+.btn-halo::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, oklch(70% 0.18 155 / 0.4), oklch(65% 0.13 220 / 0.4));
+  filter: blur(12px);
+  opacity: 0.7;
+  z-index: -1;
+  transition: opacity 200ms ease;
+}
+.btn-halo:hover::before { opacity: 1; }
+
+/* Subtle conic-gradient border for "featured" tiers / cards */
+.gradient-border {
+  position: relative;
+  background: linear-gradient(180deg, oklch(19% 0.014 250), oklch(17% 0.013 250)) padding-box;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from 180deg at 50% 50%,
+    oklch(70% 0.18 155 / 0.6),
+    oklch(65% 0.13 220 / 0.4),
+    oklch(28% 0.013 250),
+    oklch(28% 0.013 250),
+    oklch(70% 0.18 155 / 0.6)
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Hover lift + glow combo — used by feature cards on landing */
+.feature-card {
+  transition: transform 240ms ease, border-color 240ms ease, box-shadow 240ms ease;
+  border: 1px solid oklch(28% 0.013 250 / 0.5);
+}
+.feature-card:hover {
+  transform: translateY(-3px);
+  border-color: oklch(36% 0.02 250);
+  box-shadow:
+    0 1px 0 0 oklch(100% 0 0 / 0.04) inset,
+    0 20px 60px -20px oklch(70% 0.18 155 / 0.18);
+}
+
+/* ============================================================================
+ * Marquee-style gradient text — used for hero title fragments.
+ * Animated gradient sweep is more dynamic than static colour.
+ * ============================================================================ */
+.text-gradient {
+  background: linear-gradient(
+    110deg,
+    oklch(94% 0.005 250) 30%,
+    oklch(70% 0.18 155) 50%,
+    oklch(94% 0.005 250) 70%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+          background-clip: text;
+  color: transparent;
+  animation: shimmer 6s ease-in-out infinite;
 }
