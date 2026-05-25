@@ -1,76 +1,247 @@
+/* =============================================================================
+ * Global theme — PolyQuantLab
+ *
+ * Design language: Linear / Vercel / Stripe Dashboard. The product is a
+ * quant tool — visual identity should signal "infrastructure for serious
+ * traders" rather than "consumer crypto app". Specifically:
+ *
+ *   - Dark first. Traders work in dark mode; light mode for marketing pages
+ *     only. (We expose `data-theme="quant-dark"` from layout.tsx.)
+ *   - Single accent colour (electric emerald) that lets tabular data and
+ *     PnL +/- still pop. No rainbow gradients.
+ *   - Inter for UI, JetBrains Mono for numbers and code. Tabular figures
+ *     so prices in a column visually line up.
+ *   - Deep, almost-black surfaces with subtle elevation steps. Hairline
+ *     borders instead of heavy shadows. (Shadows are for cards that
+ *     actually float — drop-down menus, toasts.)
+ *
+ * Two themes are defined: `quant-dark` (default) and `quant-light`
+ * (still available for screenshots / print). Marketing surfaces opt
+ * into light by setting data-theme="quant-light" on their <main>.
+ * ============================================================================= */
+
 @import "tailwindcss";
+
+/* JetBrains Mono for tabular numbers — loaded from Google so we don't
+   ship the variable font ourselves. */
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap");
+
 @plugin "daisyui" {
-  themes: light --default;
+  themes: quant-dark --default, quant-light;
+}
+
+/* ─── Custom DaisyUI themes ────────────────────────────────────────── */
+@plugin "daisyui/theme" {
+  name: "quant-dark";
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+
+  /* Surfaces — deep slate, escalating elevation */
+  --color-base-100: oklch(15% 0.013 250);     /* page bg          */
+  --color-base-200: oklch(19% 0.014 250);     /* card bg          */
+  --color-base-300: oklch(24% 0.015 250);     /* hover / nested   */
+  --color-base-content: oklch(94% 0.005 250); /* body text        */
+
+  /* Accent — electric emerald. Used sparingly; PnL +/- has its own
+     success/error so the accent stays for navigation + CTAs. */
+  --color-primary: oklch(70% 0.18 155);
+  --color-primary-content: oklch(15% 0.013 250);
+
+  --color-secondary: oklch(65% 0.13 220);
+  --color-secondary-content: oklch(98% 0.003 250);
+
+  --color-accent: oklch(72% 0.15 70);
+  --color-accent-content: oklch(15% 0.013 250);
+
+  --color-neutral: oklch(28% 0.013 250);
+  --color-neutral-content: oklch(94% 0.005 250);
+
+  /* Semantic — PnL / win-loss / status cues. Tuned for dark surfaces. */
+  --color-info: oklch(72% 0.13 240);
+  --color-info-content: oklch(15% 0.013 250);
+  --color-success: oklch(72% 0.18 150);
+  --color-success-content: oklch(15% 0.013 250);
+  --color-warning: oklch(82% 0.15 75);
+  --color-warning-content: oklch(15% 0.013 250);
+  --color-error: oklch(65% 0.22 25);
+  --color-error-content: oklch(98% 0.003 250);
+
+  /* Radius — soft but not bubbly. Linear uses ~6-8px. */
+  --radius-selector: 0.375rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+
+  /* Borders — hairline */
+  --border: 1px;
+
+  /* Slightly bolder text for buttons & navigation */
+  --depth: 1;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "quant-light";
+  color-scheme: light;
+
+  --color-base-100: oklch(99% 0.001 250);
+  --color-base-200: oklch(96.5% 0.003 250);
+  --color-base-300: oklch(93% 0.005 250);
+  --color-base-content: oklch(19% 0.014 250);
+
+  --color-primary: oklch(55% 0.18 155);
+  --color-primary-content: oklch(99% 0.001 250);
+
+  --color-secondary: oklch(55% 0.13 220);
+  --color-secondary-content: oklch(99% 0.001 250);
+
+  --color-accent: oklch(62% 0.15 70);
+  --color-accent-content: oklch(19% 0.014 250);
+
+  --color-neutral: oklch(28% 0.013 250);
+  --color-neutral-content: oklch(99% 0.001 250);
+
+  --color-info: oklch(55% 0.13 240);
+  --color-info-content: oklch(99% 0.001 250);
+  --color-success: oklch(55% 0.18 150);
+  --color-success-content: oklch(99% 0.001 250);
+  --color-warning: oklch(72% 0.15 75);
+  --color-warning-content: oklch(19% 0.014 250);
+  --color-error: oklch(58% 0.22 25);
+  --color-error-content: oklch(99% 0.001 250);
+
+  --radius-selector: 0.375rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
 }
 
 @theme {
-  --font-display: "Satoshi", "sans-serif";
-  
+  --font-display: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Menlo", "Consolas", monospace;
+
   --animate-shimmer: shimmer 3s ease-out infinite alternate;
   --animate-opacity: opacity 0.25s ease-in-out;
   --animate-appearFromRight: appearFromRight 300ms ease-in-out;
-  --animate-wiggle: wiggle 1.5s ease-in-out infinite;
   --animate-popup: popup 0.25s ease-in-out;
 
   @keyframes shimmer {
-    0% { background-position: 0 50%; }
-    50% { background-position: 100% 50%; }
+    0%   { background-position: 0 50%; }
+    50%  { background-position: 100% 50%; }
     100% { background-position: 0% 50%; }
   }
-
   @keyframes opacity {
-    0% { opacity: 0; }
+    0%   { opacity: 0; }
     100% { opacity: 1; }
   }
-
   @keyframes appearFromRight {
-    0% { opacity: 0.3; transform: translate(15%, 0px); }
+    0%   { opacity: 0.3; transform: translate(15%, 0px); }
     100% { opacity: 1; transform: translate(0); }
   }
-
-  @keyframes wiggle {
-    0%, 20%, 80%, 100% { transform: rotate(0deg); }
-    30%, 60% { transform: rotate(-2deg); }
-    40%, 70% { transform: rotate(2deg); }
-    45% { transform: rotate(-4deg); }
-    55% { transform: rotate(4deg); }
-  }
-
   @keyframes popup {
-    0% { transform: scale(0.8); opacity: 0.8; }
-    50% { transform: scale(1.1); opacity: 1; }
+    0%   { transform: scale(0.8); opacity: 0.8; }
+    50%  { transform: scale(1.1); opacity: 1; }
     100% { transform: scale(1); opacity: 1; }
   }
 }
 
-html,
-body {
+/* ─── Base element polish ──────────────────────────────────────────── */
+html, body {
   scroll-behavior: smooth !important;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
+/* All tables that contain numbers — opt every cell into tabular figures
+   so columns of prices line up. Most dashboards forget this. */
+.tabular-nums, table, .font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tighten button capitalisation — DaisyUI's default uppercase-y look
+   feels dated. */
+.btn {
+  text-transform: none !important;
+  letter-spacing: -0.005em;
+  font-weight: 500;
+}
+
+/* Subtle, more modern card hover — used by Link cards on the dashboard. */
+.hover-card-lift {
+  transition: transform 200ms ease, border-color 200ms ease, background 200ms ease;
+}
+.hover-card-lift:hover {
+  transform: translateY(-1px);
+  border-color: oklch(36% 0.02 250);
+}
+
+/* Subtle inner glow on focused inputs — replaces DaisyUI's blocky outline. */
+input.input-bordered:focus,
+select.select-bordered:focus,
+textarea.textarea-bordered:focus {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--color-primary), 0 0 0 3px oklch(70% 0.18 155 / 0.15);
+  border-color: var(--color-primary);
+}
+
+/* Progress bars (used by Stripe checkout button etc.) */
 progress::-webkit-progress-value {
   transition: 0.6s width ease-out;
 }
 
+/* Legacy gradient button — keep for backward compat but tone down */
 .btn-gradient {
-  background: linear-gradient(60deg, #f79533, #f37055, #ef4e7b, #a166ab, #5073b8, #1098ad, #07b39b, #6fba82) !important;
-  background-size: 300% 300% !important;
-  animation: var(--animate-shimmer) !important;
+  background: linear-gradient(135deg,
+    oklch(70% 0.18 155),
+    oklch(65% 0.13 220)) !important;
   border: 0 !important;
-  border-color: transparent !important;
-  color: white !important;
-  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1) !important;
+  color: var(--color-primary-content) !important;
+  box-shadow:
+    0 1px 0 0 oklch(100% 0 0 / 0.05) inset,
+    0 1px 2px 0 oklch(0% 0 0 / 0.4) !important;
 }
-
 .btn-gradient:hover {
-  filter: saturate(1.2) !important;
+  filter: brightness(1.08);
 }
-
 .btn-gradient:disabled {
-  background: rgb(107 114 128 / 0.3) !important;
-  color: rgb(156 163 175) !important;
+  background: oklch(28% 0.013 250) !important;
+  color: oklch(50% 0.013 250) !important;
 }
 
-.btn {
-  text-transform: capitalize !important;
+/* ─── Selection colour ────────────────────────────────────────────── */
+::selection {
+  background: oklch(70% 0.18 155 / 0.3);
+  color: oklch(98% 0.003 250);
+}
+
+/* ─── Scrollbar (WebKit) — slim, themed ─────────────────────────────── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(24% 0.015 250);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(34% 0.018 250);
+  background-clip: content-box;
+}
+
+/* ─── A subtle "infrastructure" gradient backdrop for marketing hero ─ */
+.hero-grid-bg {
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, oklch(70% 0.18 155 / 0.12), transparent 70%),
+    linear-gradient(180deg, transparent, oklch(15% 0.013 250) 90%),
+    linear-gradient(to right, oklch(24% 0.015 250 / 0.4) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(24% 0.015 250 / 0.4) 1px, transparent 1px);
+  background-size: auto, auto, 48px 48px, 48px 48px;
 }

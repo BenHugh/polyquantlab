@@ -1,25 +1,11 @@
+// Project-local theme names. We define `quant-dark` + `quant-light`
+// as custom DaisyUI themes in app/globals.css; the built-in DaisyUI
+// variants below are kept here for legacy reference but unused.
 export type Theme =
+  | "quant-dark"
+  | "quant-light"
   | "light"
   | "dark"
-  | "cupcake"
-  | "bumblebee"
-  | "emerald"
-  | "corporate"
-  | "synthwave"
-  | "retro"
-  | "cyberpunk"
-  | "valentine"
-  | "halloween"
-  | "garden"
-  | "forest"
-  | "aqua"
-  | "lofi"
-  | "pastel"
-  | "fantasy"
-  | "wireframe"
-  | "black"
-  | "luxury"
-  | "dracula"
   | "";
 
 export interface ConfigProps {
