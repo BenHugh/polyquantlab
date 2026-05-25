@@ -173,6 +173,70 @@ interface Condition {
   window_sec?: number;    // only present when PARAM_SPECS[type].needsWindow
 }
 
+// Group node — AND/OR over an arbitrary list of children, where each
+// child can itself be a Condition or another Group. The root of each
+// section (Entry / TP / SL) is always a Group so we have a stable
+// container even when empty. Mirrors backtest/conditions.py's
+// `{"op": "AND"|"OR", "children": [...]}` wire format.
+type GroupOp = "AND" | "OR";
+interface Group {
+  id: string;
+  op: GroupOp;
+  children: Node[];
+}
+type Node = Condition | Group;
+
+function isGroup(n: Node): n is Group {
+  return n.op === "AND" || n.op === "OR";
+}
+
+// Path = array of child indices from the root group down to the target
+// node. e.g. [0, 2] = root.children[0].children[2].
+type Path = readonly number[];
+
+/** Immutable update at `path` — returns a structurally new root. */
+function mutateAt(root: Group, path: Path, fn: (n: Node) => Node | null): Group {
+  function go(node: Node, idx: number): Node | null {
+    if (idx === path.length) return fn(node);
+    if (!isGroup(node)) return node;
+    const i = path[idx];
+    const childResult = go(node.children[i], idx + 1);
+    const nextChildren = childResult === null
+      ? [...node.children.slice(0, i), ...node.children.slice(i + 1)]
+      : node.children.map((c, ci) => (ci === i ? childResult : c));
+    return { ...node, children: nextChildren };
+  }
+  const result = go(root, 0);
+  return (result && isGroup(result)) ? result : root;
+}
+
+/** Wrap legacy flat-array saved state into a root Group. */
+function ensureGroup(s: unknown, label: string): Group {
+  if (Array.isArray(s)) {
+    return {
+      id: `root-${label}-${Math.random().toString(36).slice(2)}`,
+      op: "AND",
+      children: s as Node[],
+    };
+  }
+  if (s && typeof s === "object" && (s as Group).op && (s as Group).children) {
+    return s as Group;
+  }
+  return {
+    id: `root-${label}-${Math.random().toString(36).slice(2)}`,
+    op: "AND",
+    children: [],
+  };
+}
+
+function newGroup(op: GroupOp = "AND"): Group {
+  return {
+    id: Math.random().toString(36).slice(2),
+    op,
+    children: [],
+  };
+}
+
 interface BuilderState {
   // Setup
   ticker: Ticker;
@@ -184,11 +248,12 @@ interface BuilderState {
   maxFillPrice: number;
   since: string;
   until: string;
-  // Conditions
+  // Conditions — each section is a root Group (op = AND by default)
+  // containing leaf Conditions and / or nested Groups.
   tradeLogic: TradeLogic;
-  entry: Condition[];
-  takeProfit: Condition[];
-  stopLoss: Condition[];
+  entry: Group;
+  takeProfit: Group;
+  stopLoss: Group;
 }
 
 const newCondition = (
@@ -207,17 +272,27 @@ const newCondition = (
 };
 
 // ─── Templates registry ─────────────────────────────────────────────
-// Each template returns a partial BuilderState that's merged on top of
-// DEFAULT_STATE. Keep the list small + named after what real bot
-// traders look for; the goal is to lower the cold-start gap so a new
-// user has 8 useful strategies to compare before they have to invent
-// their own. Adapted from the patterns we see on r/Polymarket and
-// Polymarket Discord quant channels.
+// Each template returns a partial BuilderState merged on top of
+// DEFAULT_STATE. The helper `mkGroup` wraps a flat list of conditions
+// as an AND group at section root; templates almost always want this.
+const mkGroup = (...conds: Condition[]): Group => ({
+  id: Math.random().toString(36).slice(2),
+  op: "AND",
+  children: conds,
+});
+
+interface TemplatePatch {
+  tradeLogic?: TradeLogic;
+  entry?: Group;
+  takeProfit?: Group;
+  stopLoss?: Group;
+}
+
 interface Template {
   key: string;
   name: string;
   description: string;
-  build: () => Partial<BuilderState>;
+  build: () => TemplatePatch;
 }
 
 const TEMPLATES: Template[] = [
@@ -226,14 +301,14 @@ const TEMPLATES: Template[] = [
     name: "Buy & Hold UP",
     description:
       "No conditions — enter at the first fillable snapshot, hold to resolution. Baseline to compare other strategies against.",
-    build: () => ({ tradeLogic: "always_up", entry: [], takeProfit: [], stopLoss: [] }),
+    build: () => ({ tradeLogic: "always_up", entry: mkGroup(), takeProfit: mkGroup(), stopLoss: mkGroup() }),
   },
   {
     key: "buy_and_hold_down",
     name: "Buy & Hold DOWN",
     description:
       "Mirror of Buy & Hold UP — bet DOWN every market. Useful for testing whether the data window is biased.",
-    build: () => ({ tradeLogic: "always_down", entry: [], takeProfit: [], stopLoss: [] }),
+    build: () => ({ tradeLogic: "always_down", entry: mkGroup(), takeProfit: mkGroup(), stopLoss: mkGroup() }),
   },
   {
     key: "threshold_buy_cheap_up",
@@ -242,7 +317,7 @@ const TEMPLATES: Template[] = [
       "Buy UP when its price drops below 30¢ — classic contrarian mean-reversion.",
     build: () => ({
       tradeLogic: "always_up",
-      entry: [{ ...newCondition("token_price", "yes"), op: "<=", value: 0.3 }],
+      entry: mkGroup({ ...newCondition("token_price", "yes"), op: "<=", value: 0.3 }),
     }),
   },
   {
@@ -252,7 +327,7 @@ const TEMPLATES: Template[] = [
       "Buy UP when BTC has rallied at least $50 since market open. Rides the trend.",
     build: () => ({
       tradeLogic: "always_up",
-      entry: [{ ...newCondition("coin_move_since_open_usd"), op: ">=", value: 50 }],
+      entry: mkGroup({ ...newCondition("coin_move_since_open_usd"), op: ">=", value: 50 }),
     }),
   },
   {
@@ -262,7 +337,7 @@ const TEMPLATES: Template[] = [
       "Bet DOWN when BTC has rallied $100+ — fade overextended moves on the assumption short windows mean-revert.",
     build: () => ({
       tradeLogic: "always_down",
-      entry: [{ ...newCondition("coin_move_since_open_usd"), op: ">=", value: 100 }],
+      entry: mkGroup({ ...newCondition("coin_move_since_open_usd"), op: ">=", value: 100 }),
     }),
   },
   {
@@ -272,7 +347,7 @@ const TEMPLATES: Template[] = [
       "Enter when there are 30 seconds or less until resolution. Tries to capture the late-resolution skew.",
     build: () => ({
       tradeLogic: "always_up",
-      entry: [{ ...newCondition("time_to_resolution_s"), op: "<=", value: 30 }],
+      entry: mkGroup({ ...newCondition("time_to_resolution_s"), op: "<=", value: 30 }),
     }),
   },
   {
@@ -282,7 +357,7 @@ const TEMPLATES: Template[] = [
       "Only enter when the UP order book is tight (≤ 3¢ spread). Avoids the wide-book trap that ruins walk-book fills.",
     build: () => ({
       tradeLogic: "always_up",
-      entry: [{ ...newCondition("spread", "yes"), op: "<=", value: 0.03 }],
+      entry: mkGroup({ ...newCondition("spread", "yes"), op: "<=", value: 0.03 }),
     }),
   },
   {
@@ -292,7 +367,7 @@ const TEMPLATES: Template[] = [
       "Buy UP the moment its price crosses above 50¢ — event-based momentum trigger.",
     build: () => ({
       tradeLogic: "always_up",
-      entry: [{ ...newCondition("token_price", "yes"), op: "crosses_above", value: 0.5 }],
+      entry: mkGroup({ ...newCondition("token_price", "yes"), op: "crosses_above", value: 0.5 }),
     }),
   },
   {
@@ -302,9 +377,9 @@ const TEMPLATES: Template[] = [
       "Buy UP at ≤30¢, take profit at 50¢, stop loss at 15¢. Full round-trip example showing TP/SL exits.",
     build: () => ({
       tradeLogic: "always_up",
-      entry: [{ ...newCondition("token_price", "yes"), op: "<=", value: 0.3 }],
-      takeProfit: [{ ...newCondition("token_price", "yes"), op: ">=", value: 0.5 }],
-      stopLoss: [{ ...newCondition("token_price", "yes"), op: "<=", value: 0.15 }],
+      entry: mkGroup({ ...newCondition("token_price", "yes"), op: "<=", value: 0.3 }),
+      takeProfit: mkGroup({ ...newCondition("token_price", "yes"), op: ">=", value: 0.5 }),
+      stopLoss: mkGroup({ ...newCondition("token_price", "yes"), op: "<=", value: 0.15 }),
     }),
   },
 ];
@@ -353,9 +428,9 @@ const DEFAULT_STATE: BuilderState = {
   since: "",
   until: "",
   tradeLogic: "always_up",
-  entry: [newCondition("token_price")],
-  takeProfit: [],
-  stopLoss: [],
+  entry: mkGroup(newCondition("token_price")),
+  takeProfit: mkGroup(),
+  stopLoss: mkGroup(),
 };
 
 const LOCAL_KEY = "pql-strategy-builder";
@@ -366,10 +441,17 @@ function loadStored(): BuilderState | null {
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    // Merge into DEFAULT_STATE so any fields added since the last save
-    // (e.g. fillMode / maxFillPrice in Phase O) fall back to defaults
-    // instead of arriving as undefined and exploding on .toFixed().
-    return { ...DEFAULT_STATE, ...parsed };
+    // Merge into DEFAULT_STATE so newly-added fields fall back to defaults.
+    // The three condition sections need explicit Group hydration because
+    // saved state from Phase Q stored them as flat Condition[] arrays;
+    // ensureGroup() wraps the legacy shape into an AND root group.
+    return {
+      ...DEFAULT_STATE,
+      ...parsed,
+      entry: ensureGroup(parsed.entry, "entry"),
+      takeProfit: ensureGroup(parsed.takeProfit, "tp"),
+      stopLoss: ensureGroup(parsed.stopLoss, "sl"),
+    };
   } catch {
     return null;
   }
@@ -408,16 +490,32 @@ export default function StrategyBuilder() {
     try {
       const raw = localStorage.getItem("pql-strategy-builder-prefill");
       if (raw) {
-        const incoming = JSON.parse(raw) as Partial<BuilderState> & { origin?: string };
+        const incoming = JSON.parse(raw) as Record<string, unknown> & { origin?: string };
         const { origin: o, ...rest } = incoming;
-        const rehydrate = (cs?: Condition[]) =>
-          (cs || []).map((c) => ({ ...c, id: Math.random().toString(36).slice(2) }));
+        // Calibration / Apply legacy format ships sections as flat
+        // arrays; ensureGroup wraps them as a root AND group + we
+        // re-stamp every nested condition's id so they're unique in
+        // this session.
+        const rehydrateNode = (n: Node): Node => {
+          if (isGroup(n)) {
+            return {
+              ...n,
+              id: Math.random().toString(36).slice(2),
+              children: n.children.map(rehydrateNode),
+            };
+          }
+          return { ...n, id: Math.random().toString(36).slice(2) };
+        };
+        const wrap = (s: unknown, label: string): Group => {
+          const g = ensureGroup(s, label);
+          return rehydrateNode(g) as Group;
+        };
         const merged: BuilderState = {
           ...DEFAULT_STATE,
-          ...rest,
-          entry: rehydrate(rest.entry),
-          takeProfit: rehydrate(rest.takeProfit),
-          stopLoss: rehydrate(rest.stopLoss),
+          ...(rest as Partial<BuilderState>),
+          entry: wrap(rest.entry, "entry"),
+          takeProfit: wrap(rest.takeProfit, "tp"),
+          stopLoss: wrap(rest.stopLoss, "sl"),
         };
         setState(merged);
         if (typeof o === "string") setOrigin(o);
@@ -440,7 +538,14 @@ export default function StrategyBuilder() {
   }, []);
 
   function applyTemplate(t: Template) {
-    persist({ ...DEFAULT_STATE, ...t.build() });
+    const patch = t.build();
+    persist({
+      ...DEFAULT_STATE,
+      ...patch,
+      entry: patch.entry ?? mkGroup(),
+      takeProfit: patch.takeProfit ?? mkGroup(),
+      stopLoss: patch.stopLoss ?? mkGroup(),
+    });
     setPickerOpen(false);
     toast.success(`Loaded: ${t.name}`);
   }
@@ -464,7 +569,15 @@ export default function StrategyBuilder() {
   }
 
   function loadSavedStrategy(rec: SavedStrategy) {
-    persist({ ...DEFAULT_STATE, ...rec.state });
+    // Strategies saved before Phase T may have entry/TP/SL as flat arrays;
+    // ensureGroup normalises them to the new Group shape.
+    persist({
+      ...DEFAULT_STATE,
+      ...rec.state,
+      entry: ensureGroup(rec.state.entry, "entry"),
+      takeProfit: ensureGroup(rec.state.takeProfit, "tp"),
+      stopLoss: ensureGroup(rec.state.stopLoss, "sl"),
+    });
     setPickerOpen(false);
     toast.success(`Loaded: ${rec.name}`);
   }
@@ -488,47 +601,75 @@ export default function StrategyBuilder() {
     persist({ ...state, [key]: value });
   }
 
-  function addCond(section: "entry" | "takeProfit" | "stopLoss") {
-    persist({ ...state, [section]: [...state[section], newCondition("token_price")] });
-  }
-  function removeCond(section: "entry" | "takeProfit" | "stopLoss", id: string) {
-    persist({ ...state, [section]: state[section].filter((c) => c.id !== id) });
-  }
-  function patchCond(
-    section: "entry" | "takeProfit" | "stopLoss",
-    id: string,
-    patch: Partial<Condition>,
+  type Section = "entry" | "takeProfit" | "stopLoss";
+
+  /** Apply an immutable mutation to one section's root group at a path. */
+  function mutateSection(
+    section: Section,
+    path: Path,
+    fn: (n: Node) => Node | null,
   ) {
-    persist({
-      ...state,
-      [section]: state[section].map((c) => {
-        if (c.id !== id) return c;
-        const next = { ...c, ...patch };
-        if (patch.type) {
-          // Reset to the new type's spec — value / side / op / window
-          // from the old type don't survive a type change so the form
-          // never holds inconsistent fields.
-          const fresh = newCondition(patch.type);
-          next.value = fresh.value;
-          next.side = fresh.side;
-          next.op = fresh.op;
-          next.window_sec = fresh.window_sec;
-        }
-        // If the user changed op manually, validate it's still in the
-        // type's allowed set (e.g. switching from token_price=crosses
-        // to spread, which doesn't support crosses).
-        const spec = PARAM_SPECS[next.type];
-        if (!spec.validOps.includes(next.op)) {
-          next.op = spec.defaultOp;
-        }
-        return next;
-      }),
+    const nextRoot = mutateAt(state[section], path, fn);
+    persist({ ...state, [section]: nextRoot });
+  }
+
+  /** Append a condition to the group at `parentPath`. */
+  function addCond(section: Section, parentPath: Path = []) {
+    mutateSection(section, parentPath, (node) => {
+      if (!isGroup(node)) return node;
+      return {
+        ...node,
+        children: [...node.children, newCondition("token_price")],
+      };
+    });
+  }
+  /** Append a nested group to the group at `parentPath`. */
+  function addGroup(section: Section, parentPath: Path = []) {
+    mutateSection(section, parentPath, (node) => {
+      if (!isGroup(node)) return node;
+      return {
+        ...node,
+        children: [...node.children, newGroup("OR")],
+      };
+    });
+  }
+  /** Remove the node at `path`. Root group itself can't be removed. */
+  function removeNode(section: Section, path: Path) {
+    if (path.length === 0) return; // refuse to delete root
+    mutateSection(section, path, () => null);
+  }
+  /** Toggle a group's AND/OR op. */
+  function toggleGroupOp(section: Section, path: Path) {
+    mutateSection(section, path, (node) => {
+      if (!isGroup(node)) return node;
+      return { ...node, op: node.op === "AND" ? "OR" : "AND" };
+    });
+  }
+  /** Patch a leaf condition at `path`. */
+  function patchCond(section: Section, path: Path, patch: Partial<Condition>) {
+    mutateSection(section, path, (node) => {
+      if (isGroup(node)) return node;
+      const next: Condition = { ...node, ...patch };
+      if (patch.type) {
+        // Type change resets the dependent fields to the new spec's
+        // defaults so the row never holds inconsistent state.
+        const fresh = newCondition(patch.type);
+        next.value = fresh.value;
+        next.side = fresh.side;
+        next.op = fresh.op;
+        next.window_sec = fresh.window_sec;
+      }
+      const spec = PARAM_SPECS[next.type];
+      if (!spec.validOps.includes(next.op)) {
+        next.op = spec.defaultOp;
+      }
+      return next;
     });
   }
 
   // -- Plain English summary (mirrors backtest/conditions.py:humanise) --
 
-  function humanise(c: Condition): string {
+  function humanCondition(c: Condition): string {
     const op = OP_LABELS[c.op] || c.op;
     const spec = PARAM_SPECS[c.type];
     const sidePrefix = spec.hasSide ? `${c.side?.toUpperCase() ?? ""} ` : "";
@@ -541,24 +682,63 @@ export default function StrategyBuilder() {
     return `${sidePrefix}${spec.label} ${op} ${unit}${c.value}${windowSuffix}`;
   }
 
+  /** Render a node tree as a flat one-line phrase. Nested groups get
+   * wrapped in parens so precedence reads unambiguously. */
+  function humanNode(n: Node): string {
+    if (isGroup(n)) {
+      if (n.children.length === 0) return "(no rules)";
+      const parts = n.children.map(humanNode);
+      if (parts.length === 1) return parts[0];
+      return "(" + parts.join(` ${n.op} `) + ")";
+    }
+    return humanCondition(n);
+  }
+  /** Section root — strip the outer parens for prettier reading. */
+  function humanSection(root: Group): string | null {
+    if (root.children.length === 0) return null;
+    if (root.children.length === 1) return humanNode(root.children[0]);
+    return root.children.map(humanNode).join(` ${root.op} `);
+  }
+
   const readsAs = useMemo(() => {
     const entryEn =
-      state.entry.length === 0
-        ? "no rules — enter as soon as a fill is possible"
-        : state.entry.map(humanise).join(" AND ");
-    const tpEn =
-      state.takeProfit.length === 0
-        ? null
-        : state.takeProfit.map(humanise).join(" AND ");
-    const slEn =
-      state.stopLoss.length === 0
-        ? null
-        : state.stopLoss.map(humanise).join(" AND ");
+      humanSection(state.entry) ?? "no rules — enter as soon as a fill is possible";
+    const tpEn = humanSection(state.takeProfit);
+    const slEn = humanSection(state.stopLoss);
     const dir = state.tradeLogic === "always_up" ? "UP" : "DOWN";
     return { entryEn, tpEn, slEn, dir };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
   // -- Submit ------------------------------------------------------------
+
+  /** Serialise the node tree for the backend. Simple AND-of-leaves
+   * sections emit the legacy flat-array form so existing log/result
+   * payloads stay readable; anything richer goes out as the explicit
+   * tree shape, which the Phase T evaluator handles natively. */
+  function serialiseSection(root: Group): unknown {
+    const allLeavesAnd =
+      root.op === "AND" && root.children.every((c) => !isGroup(c));
+    if (allLeavesAnd) {
+      return root.children.map(stripIds);
+    }
+    return stripIds(root);
+  }
+
+  /** Build the wire-format strategy spec from the current builder state. */
+  function buildStrategySpec() {
+    return {
+      type: "condition_based",
+      entry: serialiseSection(state.entry),
+      take_profit: serialiseSection(state.takeProfit),
+      stop_loss: serialiseSection(state.stopLoss),
+      trade_logic: state.tradeLogic,
+      size_usd: state.sizeUsd,
+      max_trades_per_market: state.maxTradesPerMarket,
+      fill_mode: state.fillMode,
+      max_fill_price: state.maxFillPrice,
+    };
+  }
 
   async function submit() {
     // Empty entry is allowed — backend treats it as "enter at first
@@ -566,17 +746,7 @@ export default function StrategyBuilder() {
     // PolyBackTest's buy-and-hold default.
     setSubmitting(true);
 
-    const strategy = {
-      type: "condition_based",
-      entry: state.entry.map(stripId),
-      take_profit: state.takeProfit.map(stripId),
-      stop_loss: state.stopLoss.map(stripId),
-      trade_logic: state.tradeLogic,
-      size_usd: state.sizeUsd,
-      max_trades_per_market: state.maxTradesPerMarket,
-      fill_mode: state.fillMode,
-      max_fill_price: state.maxFillPrice,
-    };
+    const strategy = buildStrategySpec();
     const payload = {
       strategy,
       ticker: state.ticker,
@@ -605,6 +775,77 @@ export default function StrategyBuilder() {
         return;
       }
       router.push(`/dashboard/backtest/${id}`);
+    } catch (e: any) {
+      toast.error(e?.message || "Network error");
+      setSubmitting(false);
+    }
+  }
+
+  /**
+   * "Run as paper trade" — kick off the strategy live on incoming
+   * snapshots. To make the result page meaningful, we also fire a
+   * baseline backtest with the same spec; the paper detail page then
+   * surfaces "your live P&L is tracking X% above/below your backtest's
+   * baseline expectation". Both calls happen in parallel.
+   *
+   * If the backtest submission fails (queue full / tier gate / etc.),
+   * we still create the paper strategy so the user isn't blocked — the
+   * detail page just falls back to "no baseline" mode.
+   */
+  async function submitAsPaper() {
+    setSubmitting(true);
+    const strategy = buildStrategySpec();
+
+    // Fire the baseline backtest first so we have a job_id to attach.
+    // Keep this best-effort — if it fails we proceed without baseline.
+    let baselineId: string | null = null;
+    try {
+      const r = await fetch("/api/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy,
+          ticker: state.ticker,
+          event_type: state.eventType,
+          market_limit: Math.max(50, state.marketLimit),
+        }),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        baselineId = data?.job_id || data?.id || null;
+      }
+    } catch {
+      // Network blip — proceed without baseline.
+    }
+
+    try {
+      const r = await fetch("/api/paper/strategies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: null,
+          strategy_spec: strategy,
+          ticker: state.ticker,
+          event_type: state.eventType,
+          size_usd: state.sizeUsd,
+          baseline_backtest_id: baselineId,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        const msg = data?.detail || data?.error || `Failed (${r.status})`;
+        toast.error(String(msg));
+        setSubmitting(false);
+        return;
+      }
+      const id = data.paper_strategy_id;
+      if (!id) {
+        toast.error("Backend returned no paper_strategy_id");
+        setSubmitting(false);
+        return;
+      }
+      toast.success("Paper trading started — opening detail page…");
+      router.push(`/dashboard/paper/${id}`);
     } catch (e: any) {
       toast.error(e?.message || "Network error");
       setSubmitting(false);
@@ -877,11 +1118,15 @@ export default function StrategyBuilder() {
         subtitle="When should we look for a trade?"
         readsAs={`Enter when ${readsAs.entryEn}.`}
       >
-        <ConditionList
-          conditions={state.entry}
-          onAdd={() => addCond("entry")}
-          onRemove={(id) => removeCond("entry", id)}
-          onPatch={(id, patch) => patchCond("entry", id, patch)}
+        <ConditionGroup
+          group={state.entry}
+          path={[]}
+          isRoot
+          onAddCond={(p) => addCond("entry", p)}
+          onAddGroup={(p) => addGroup("entry", p)}
+          onRemove={(p) => removeNode("entry", p)}
+          onToggleOp={(p) => toggleGroupOp("entry", p)}
+          onPatchCond={(p, patch) => patchCond("entry", p, patch)}
         />
       </Section>
 
@@ -910,11 +1155,15 @@ export default function StrategyBuilder() {
         }
         emptyHint="No TP rules — positions hold to resolution unless stopped out."
       >
-        <ConditionList
-          conditions={state.takeProfit}
-          onAdd={() => addCond("takeProfit")}
-          onRemove={(id) => removeCond("takeProfit", id)}
-          onPatch={(id, patch) => patchCond("takeProfit", id, patch)}
+        <ConditionGroup
+          group={state.takeProfit}
+          path={[]}
+          isRoot
+          onAddCond={(p) => addCond("takeProfit", p)}
+          onAddGroup={(p) => addGroup("takeProfit", p)}
+          onRemove={(p) => removeNode("takeProfit", p)}
+          onToggleOp={(p) => toggleGroupOp("takeProfit", p)}
+          onPatchCond={(p, patch) => patchCond("takeProfit", p, patch)}
         />
       </Section>
 
@@ -927,15 +1176,19 @@ export default function StrategyBuilder() {
         }
         emptyHint="No SL rules — positions ride to resolution unless TP triggers."
       >
-        <ConditionList
-          conditions={state.stopLoss}
-          onAdd={() => addCond("stopLoss")}
-          onRemove={(id) => removeCond("stopLoss", id)}
-          onPatch={(id, patch) => patchCond("stopLoss", id, patch)}
+        <ConditionGroup
+          group={state.stopLoss}
+          path={[]}
+          isRoot
+          onAddCond={(p) => addCond("stopLoss", p)}
+          onAddGroup={(p) => addGroup("stopLoss", p)}
+          onRemove={(p) => removeNode("stopLoss", p)}
+          onToggleOp={(p) => toggleGroupOp("stopLoss", p)}
+          onPatchCond={(p, patch) => patchCond("stopLoss", p, patch)}
         />
       </Section>
 
-      {state.takeProfit.length === 0 && state.stopLoss.length === 0 && (
+      {state.takeProfit.children.length === 0 && state.stopLoss.children.length === 0 && (
         <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
           Heads up — Take Profit and Stop Loss are both empty. Trades will
           only exit on resolution.
@@ -960,13 +1213,21 @@ export default function StrategyBuilder() {
         </div>
       )}
 
-      <div className="flex items-center justify-end gap-3 pt-2">
+      <div className="flex items-center justify-end gap-3 pt-2 flex-wrap">
         <button
           className="btn btn-ghost btn-sm"
           onClick={() => persist(DEFAULT_STATE)}
           disabled={submitting}
         >
           Reset
+        </button>
+        <button
+          className="btn btn-outline btn-sm rounded-lg"
+          onClick={submitAsPaper}
+          disabled={submitting}
+          title="Run this strategy live on incoming snapshots, with a backtest baseline for comparison."
+        >
+          {submitting ? "Submitting…" : "Run as paper trade"}
         </button>
         <button
           className="btn btn-primary btn-sm rounded-lg"
@@ -1040,48 +1301,140 @@ function Field({
   );
 }
 
-function ConditionList({
-  conditions,
-  onAdd,
-  onRemove,
-  onPatch,
+/* ─── Recursive ConditionGroup ────────────────────────────────────────
+ * Renders a group (AND or OR) with a left-rail bracket + clickable
+ * AND/OR pill at the top. Children render as ConditionRow (leaves)
+ * or recursively as ConditionGroup (nested branches). Trailing
+ * `+ Add condition` / `+ Add group` row.
+ *
+ * The root group of each section (Entry / TP / SL) renders without
+ * the bracket chrome — it would be visually noisy when only one
+ * group exists. Nested groups get the full treatment.
+ */
+
+interface GroupHandlers {
+  onAddCond: (path: Path) => void;
+  onAddGroup: (path: Path) => void;
+  onRemove: (path: Path) => void;
+  onToggleOp: (path: Path) => void;
+  onPatchCond: (path: Path, patch: Partial<Condition>) => void;
+}
+
+function ConditionGroup({
+  group,
+  path,
+  isRoot = false,
+  ...handlers
 }: {
-  conditions: Condition[];
-  onAdd: () => void;
-  onRemove: (id: string) => void;
-  onPatch: (id: string, patch: Partial<Condition>) => void;
-}) {
+  group: Group;
+  path: Path;
+  isRoot?: boolean;
+} & GroupHandlers) {
+  const isEmpty = group.children.length === 0;
+  const pillTone =
+    group.op === "OR"
+      ? "bg-accent/15 border-accent/30 text-accent"
+      : "bg-primary/10 border-primary/25 text-primary";
+
   return (
-    <div className="space-y-2">
-      {conditions.length === 0 && (
+    <div
+      className={
+        isRoot
+          ? "space-y-2"
+          : "space-y-2 pl-3 border-l-2 border-base-300/60 relative"
+      }
+    >
+      {/* AND/OR pill — clickable, toggles op. Only shows when there are
+        * at least 2 children (otherwise the joiner doesn't apply). Root
+        * groups get a smaller header pill placed above the rows. */}
+      {(group.children.length >= 2 || !isRoot) && (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => handlers.onToggleOp(path)}
+            className={`text-[10px] font-mono uppercase tracking-widest border rounded px-2 py-0.5 transition-colors ${pillTone} hover:brightness-110`}
+            title="Click to toggle between AND / OR"
+          >
+            {group.op}
+          </button>
+          {!isRoot && (
+            <button
+              type="button"
+              onClick={() => handlers.onRemove(path)}
+              className="text-[10px] text-base-content/40 hover:text-error opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label="Remove group"
+              title="Remove group"
+            >
+              remove group
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Children */}
+      {isEmpty ? (
         <div className="text-center text-xs text-base-content/40 py-3 font-mono">
           No conditions yet — add one below
         </div>
+      ) : (
+        <div className="space-y-2">
+          {group.children.map((child, idx) => {
+            const childPath = [...path, idx];
+            return (
+              <div key={isGroup(child) ? child.id : child.id} className="group">
+                {idx > 0 && (
+                  <div className="flex justify-center -my-1 py-0.5">
+                    <span
+                      className={`text-[9px] font-mono uppercase tracking-widest border rounded px-1.5 py-px ${pillTone}`}
+                    >
+                      {group.op}
+                    </span>
+                  </div>
+                )}
+                {isGroup(child) ? (
+                  <ConditionGroup group={child} path={childPath} {...handlers} />
+                ) : (
+                  <ConditionRow
+                    c={child}
+                    index={idx + 1}
+                    onRemove={() => handlers.onRemove(childPath)}
+                    onPatch={(patch) => handlers.onPatchCond(childPath, patch)}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
-      {conditions.map((c) => (
-        <ConditionRow
-          key={c.id}
-          c={c}
-          onRemove={() => onRemove(c.id)}
-          onPatch={(patch) => onPatch(c.id, patch)}
-        />
-      ))}
-      <button
-        onClick={onAdd}
-        className="btn btn-ghost btn-sm w-full justify-start border border-dashed border-base-300/60"
-      >
-        + Add condition
-      </button>
+
+      {/* Add buttons */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => handlers.onAddCond(path)}
+          className="btn btn-ghost btn-sm flex-1 justify-start border border-dashed border-base-300/60 hover:border-base-content/30"
+        >
+          + Add condition
+        </button>
+        <button
+          onClick={() => handlers.onAddGroup(path)}
+          className="btn btn-ghost btn-sm justify-start border border-dashed border-base-300/60 hover:border-base-content/30"
+          title="Add a nested group with its own AND/OR"
+        >
+          + Add group
+        </button>
+      </div>
     </div>
   );
 }
 
 function ConditionRow({
   c,
+  index,
   onRemove,
   onPatch,
 }: {
   c: Condition;
+  index: number;
   onRemove: () => void;
   onPatch: (patch: Partial<Condition>) => void;
 }) {
@@ -1091,11 +1444,19 @@ function ConditionRow({
     spec.unit === "usd" ? 10 :
     spec.unit === "stddev" ? 0.01 :
     0.01;
+  // The wrapping `group` class is set by the parent <div className="group">,
+  // so hover anywhere on the row reveals the delete button (Linear / Notion
+  // pattern — keeps the row visually quiet when not interacting).
   return (
-    <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg bg-base-100 border border-base-300/60">
+    <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg bg-base-100 border border-base-300/70 transition-colors hover:border-base-content/20">
+      {/* Index badge */}
+      <span className="text-[10px] font-mono text-base-content/40 w-6 shrink-0">
+        #{index}
+      </span>
+
       {/* Parameter type */}
       <select
-        className="select select-xs select-bordered min-w-[8.5rem]"
+        className="select select-xs min-w-[8.5rem]"
         value={c.type}
         onChange={(e) => onPatch({ type: e.target.value as ConditionType })}
         title={spec.description}
@@ -1105,10 +1466,9 @@ function ConditionRow({
         ))}
       </select>
 
-      {/* Side (UP/DOWN) — only when the parameter has a side */}
       {spec.hasSide && (
         <select
-          className="select select-xs select-bordered"
+          className="select select-xs"
           value={c.side ?? "yes"}
           onChange={(e) => onPatch({ side: e.target.value as TokenSide })}
         >
@@ -1117,9 +1477,8 @@ function ConditionRow({
         </select>
       )}
 
-      {/* Operator — only those valid for this parameter */}
       <select
-        className="select select-xs select-bordered"
+        className="select select-xs"
         value={c.op}
         onChange={(e) => onPatch({ op: e.target.value as Op })}
       >
@@ -1128,21 +1487,17 @@ function ConditionRow({
         ))}
       </select>
 
-      {/* Threshold value */}
       <input
         type="number"
-        className="input input-xs input-bordered w-24 tabular-nums"
+        className="input input-xs w-24 tabular-nums"
         step={step}
         value={c.value}
-        onChange={(e) =>
-          onPatch({ value: parseFloat(e.target.value) || 0 })
-        }
+        onChange={(e) => onPatch({ value: parseFloat(e.target.value) || 0 })}
       />
       <span className="text-[10px] text-base-content/40 font-mono">
         {UNIT_HINT[spec.unit]}
       </span>
 
-      {/* Lookback window — only for volatility primitives */}
       {spec.needsWindow && (
         <>
           <span className="text-[10px] text-base-content/40 font-mono uppercase tracking-widest">
@@ -1150,7 +1505,7 @@ function ConditionRow({
           </span>
           <input
             type="number"
-            className="input input-xs input-bordered w-20 tabular-nums"
+            className="input input-xs w-20 tabular-nums"
             step={10}
             min={10}
             max={3600}
@@ -1163,12 +1518,19 @@ function ConditionRow({
         </>
       )}
 
+      {/* Hover-only delete. Trash icon + slightly larger hit target. */}
       <button
-        className="btn btn-ghost btn-xs btn-square ml-auto text-base-content/50 hover:text-error"
+        className="btn btn-ghost btn-sm btn-square ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-base-content/50 hover:text-error"
         onClick={onRemove}
         aria-label="Remove condition"
+        title="Remove this condition"
       >
-        ×
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-2 14H7L5 6" />
+          <path d="M10 11v6M14 11v6" />
+          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+        </svg>
       </button>
     </div>
   );
@@ -1176,7 +1538,14 @@ function ConditionRow({
 
 /* ─── Helpers ────────────────────────────────────────────────────── */
 
-function stripId(c: Condition) {
-  const { id: _, ...rest } = c;
+/** Drop `id` recursively before sending to the backend. */
+function stripIds(n: Node): unknown {
+  if (isGroup(n)) {
+    return {
+      op: n.op,
+      children: n.children.map(stripIds),
+    };
+  }
+  const { id: _, ...rest } = n;
   return rest;
 }

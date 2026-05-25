@@ -121,11 +121,27 @@ def _evaluate_one(
     strategy_callable,
     snapshot: OrderBookSnapshot,
     resolution_at: datetime | None,
+    market_open: OrderBookSnapshot | None,
 ) -> tuple[Side, float] | None:
-    """Run a strategy on a single snapshot (no history). Returns
-    (side, size_usd) on fire, None otherwise. Wraps the function-call
-    in a try/except — a bad spec shouldn't kill the whole worker."""
+    """Run a strategy on a single snapshot. Returns (side, size_usd)
+    on fire, None otherwise. Wraps the call in try/except — a bad
+    spec shouldn't kill the whole worker.
+
+    Class-based strategies (ConditionBasedStrategy from Phase M+) have
+    `reset_market_state` as a sentinel attribute and accept the
+    market_open kwarg that primitives like coin_move_since_open_* and
+    time_since_market_open_s read off the context. Function strategies
+    (threshold_entry / mean_reversion / time_before_resolution) don't
+    accept market_open — we sniff the attribute and dispatch
+    accordingly. Same convention as backtest/engine.py."""
     try:
+        is_class_based = hasattr(strategy_callable, "reset_market_state")
+        if is_class_based:
+            return strategy_callable(
+                [], snapshot,
+                resolution_at=resolution_at,
+                market_open=market_open,
+            )
         import inspect
 
         sig = (
@@ -141,6 +157,92 @@ def _evaluate_one(
         return strategy_callable([], snapshot)
     except Exception:  # noqa: BLE001
         return None
+
+
+# ---------------------------------------------------------------------------
+# Per-(strategy, market) caches
+# ---------------------------------------------------------------------------
+#
+# Two pieces of state need to survive across snapshots:
+#
+#  1. The market_open reference snapshot. Phase Q's `coin_move_since_open_*`
+#     and `time_since_market_open_s` primitives read this from the
+#     evaluator context. The backtest engine uses snapshots[0]; here we
+#     query ClickHouse for the earliest snapshot per market_id on first
+#     encounter, then cache.
+#
+#  2. The class-based strategy instance itself. ConditionBasedStrategy
+#     accumulates `_entry_cross_state` and `_exit_cross_state` across
+#     calls so `crosses_above` / `crosses_below` can fire on the
+#     snapshot that completes the transition. If we rebuilt the
+#     instance every call (the old behaviour), cross-state was always
+#     empty and those operators silently never fired in paper trading.
+#
+# Both caches are unbounded in memory but small in practice (paper
+# strategies × active markets). Cleared per-cycle when the strategy
+# row set changes.
+
+# market_id → OrderBookSnapshot (first ever seen)
+_MARKET_OPEN_CACHE: dict[str, OrderBookSnapshot] = {}
+
+# (paper_strategy_id, market_id) → strategy callable with persisted state
+_STRATEGY_INSTANCE_CACHE: dict[tuple[Any, str], Any] = {}
+
+
+async def _market_open_for(
+    ch: AsyncClient,
+    market_id: str,
+    ticker: str,
+) -> OrderBookSnapshot | None:
+    """Return the earliest snapshot we have for `market_id`. Cached."""
+    cached = _MARKET_OPEN_CACHE.get(market_id)
+    if cached is not None:
+        return cached
+    result = await ch.query(
+        """
+        SELECT market_id, ts, yes_bids, yes_asks, no_bids, no_asks,
+               underlying_price
+          FROM orderbook_snapshots
+         WHERE market_id = {market_id:String}
+         ORDER BY ts ASC LIMIT 1
+        """,
+        parameters={"market_id": market_id},
+    )
+    if not result.result_rows:
+        return None
+    snap = _row_to_snapshot(result.result_rows[0], ticker=ticker)
+    _MARKET_OPEN_CACHE[market_id] = snap
+    return snap
+
+
+def _get_strategy_instance(
+    paper_strategy_id: Any,
+    market_id: str,
+    spec_copy: dict[str, Any],
+):
+    """Return the cached strategy callable for (strategy_id, market_id),
+    building it (and clearing per-market state) on first encounter."""
+    key = (paper_strategy_id, market_id)
+    existing = _STRATEGY_INSTANCE_CACHE.get(key)
+    if existing is not None:
+        return existing
+    fn = build_strategy(spec_copy)
+    reset = getattr(fn, "reset_market_state", None)
+    if callable(reset):
+        reset()
+    _STRATEGY_INSTANCE_CACHE[key] = fn
+    return fn
+
+
+def _purge_caches_for_strategy(paper_strategy_id: Any) -> None:
+    """Drop every cache entry tied to a strategy (called when it's
+    paused, deleted, or hasn't appeared in recent active-strategy
+    lists). Prevents unbounded memory growth."""
+    keys_to_drop = [
+        k for k in _STRATEGY_INSTANCE_CACHE if k[0] == paper_strategy_id
+    ]
+    for k in keys_to_drop:
+        _STRATEGY_INSTANCE_CACHE.pop(k, None)
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +270,15 @@ async def _open_positions_for_new_snapshots(
         """
     )
     if not strategies:
+        # Reclaim instance-cache memory if all strategies disappeared.
+        _STRATEGY_INSTANCE_CACHE.clear()
         return 0
 
-    # Pre-build the callables once per cycle so the strategy_spec → fn
-    # mapping doesn't run on every snapshot.
-    compiled: list[tuple[Any, dict[str, Any]]] = []
+    # Pre-compile the parsed spec + filter ctx per active strategy. The
+    # actual callable now lives in _STRATEGY_INSTANCE_CACHE keyed by
+    # (strategy_id, market_id) so cross-state survives across snapshots.
+    compiled: list[dict[str, Any]] = []
+    active_ids = set()
     for srow in strategies:
         spec_raw = srow["strategy_spec"]
         spec = (
@@ -180,23 +286,22 @@ async def _open_positions_for_new_snapshots(
             if isinstance(spec_raw, str)
             else dict(spec_raw)
         )
-        try:
-            fn = build_strategy(spec)
-        except Exception:  # noqa: BLE001
-            continue
-        compiled.append(
-            (
-                fn,
-                {
-                    "paper_strategy_id": srow["paper_strategy_id"],
-                    "spec": spec,
-                    "ticker": srow["ticker"],
-                    "event_type": srow["event_type"],
-                    "size_usd": float(srow["size_usd"]),
-                    "started_at": srow["started_at"],
-                },
-            )
-        )
+        active_ids.add(srow["paper_strategy_id"])
+        compiled.append({
+            "paper_strategy_id": srow["paper_strategy_id"],
+            "spec": spec,
+            "ticker": srow["ticker"],
+            "event_type": srow["event_type"],
+            "size_usd": float(srow["size_usd"]),
+            "started_at": srow["started_at"],
+        })
+    # Garbage-collect cache entries for strategies that are no longer
+    # active (paused, deleted). Bounds memory at active-strategy size.
+    stale_keys = [
+        k for k in _STRATEGY_INSTANCE_CACHE if k[0] not in active_ids
+    ]
+    for k in stale_keys:
+        _STRATEGY_INSTANCE_CACHE.pop(k, None)
     if not compiled:
         return 0
 
@@ -255,7 +360,14 @@ async def _open_positions_for_new_snapshots(
             continue  # already resolved — settlement loop handles it
         snap = _row_to_snapshot(row, ticker=m_meta["ticker"])
 
-        for fn, ctx in compiled:
+        # Resolve market_open once per market in this batch (cached
+        # across cycles in _MARKET_OPEN_CACHE). condition_based
+        # primitives like coin_move_since_open_* read this from ctx.
+        market_open = await _market_open_for(
+            ch, market_id, ticker=m_meta["ticker"],
+        )
+
+        for ctx in compiled:
             # Filter: only consider markets matching this strategy's
             # ticker / event_type filters.
             if ctx["ticker"] and ctx["ticker"] != m_meta["ticker"]:
@@ -266,16 +378,20 @@ async def _open_positions_for_new_snapshots(
             # arrived AFTER the strategy was created.
             if snap.ts < ctx["started_at"]:
                 continue
-            # Strategy size overrides the spec's own size_usd to make
-            # explicit user-configured sizing the source of truth.
+            # Strategy size overrides the spec's own size_usd so the
+            # user's slider is the source of truth.
             spec_copy = dict(ctx["spec"])
             spec_copy["size_usd"] = ctx["size_usd"]
             try:
-                trigger_fn = build_strategy(spec_copy)
+                trigger_fn = _get_strategy_instance(
+                    ctx["paper_strategy_id"], market_id, spec_copy,
+                )
             except Exception:  # noqa: BLE001
                 continue
             action = _evaluate_one(
-                trigger_fn, snap, resolution_at=m_meta["resolution_at"]
+                trigger_fn, snap,
+                resolution_at=m_meta["resolution_at"],
+                market_open=market_open,
             )
             if action is None:
                 continue
@@ -350,6 +466,10 @@ async def _settle_newly_resolved(
             resolution_yes_price=yes_price,
         )
         settled += n
+        # Reclaim per-market caches now that this market is resolved.
+        _MARKET_OPEN_CACHE.pop(r["market_id"], None)
+        for k in [k for k in _STRATEGY_INSTANCE_CACHE if k[1] == r["market_id"]]:
+            _STRATEGY_INSTANCE_CACHE.pop(k, None)
     return settled
 
 

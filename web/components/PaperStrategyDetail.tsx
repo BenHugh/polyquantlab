@@ -14,6 +14,19 @@ interface Strategy {
   size_usd: number;
   started_at: string;
   active: boolean;
+  // Set when the strategy was created via "Run as paper trade" from
+  // Strategy Builder — points at a parallel backtest job with the same
+  // spec used as the baseline for the live tracking comparison.
+  baseline_backtest_id?: string | null;
+}
+
+interface BaselineSummary {
+  status: "queued" | "running" | "completed" | "failed";
+  total_pnl?: number;
+  win_rate?: number;
+  sharpe?: number | null;
+  max_drawdown?: number;
+  n_trades?: number;
 }
 
 interface Position {
@@ -51,6 +64,7 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [equity, setEquity] = useState<EquityCurve | null>(null);
+  const [baseline, setBaseline] = useState<BaselineSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
@@ -64,12 +78,41 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
         setError("Strategy not found or unauthorised.");
         return;
       }
-      setStrategy(await sRes.json());
+      const sBody: Strategy = await sRes.json();
+      setStrategy(sBody);
       if (pRes.ok) {
         const body = await pRes.json();
         setPositions(body.positions ?? []);
       }
       if (eRes.ok) setEquity(await eRes.json());
+      // Fetch the baseline backtest if one was linked. We hit our own
+      // /api/backtest/[id] endpoint which already polls + serializes
+      // the full job record. Best-effort — silently degrades to no
+      // baseline panel if the fetch fails.
+      if (sBody.baseline_backtest_id) {
+        try {
+          const bRes = await fetch(
+            `/api/backtest/${encodeURIComponent(sBody.baseline_backtest_id)}`,
+            { cache: "no-store" },
+          );
+          if (bRes.ok) {
+            const bJob = await bRes.json();
+            const r = bJob.result;
+            setBaseline({
+              status: bJob.status,
+              total_pnl: r?.total_pnl,
+              win_rate: r?.win_rate,
+              sharpe: r?.sharpe,
+              max_drawdown: r?.max_drawdown,
+              n_trades: r?.n_trades,
+            });
+          }
+        } catch {
+          // ignore
+        }
+      } else {
+        setBaseline(null);
+      }
       setError(null);
     } catch (e: any) {
       setError(e?.message || "Network error");
@@ -134,6 +177,15 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
         <Stat label="Closed positions" value={closed.length.toString()} />
         <Stat label="W / L" value={`${wins} / ${losses}`} />
       </div>
+
+      {/* Baseline backtest comparison — only when the strategy was
+        * created via "Run as paper trade" from Strategy Builder. */}
+      <BaselineComparison
+        baseline={baseline}
+        livePnl={equity?.final_net_pnl ?? 0}
+        liveTrades={closed.length}
+        liveWinRate={winRate}
+      />
 
       {/* Equity curve */}
       <EquityChart equity={equity} />
@@ -267,6 +319,119 @@ function EquityChart({ equity }: { equity: EquityCurve | null }) {
       <p className="text-xs opacity-60">
         {equity.n_closed_positions} closed positions in chronological order.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Baseline comparison panel — shows the backtest expectation alongside
+ * the live paper-trading reality so a user can tell whether their
+ * strategy is tracking, ahead, or behind out-of-sample. Renders only
+ * when a baseline_backtest_id was attached at strategy-create time
+ * (i.e. the strategy was created via the "Run as paper trade" CTA in
+ * Strategy Builder); legacy paper strategies just don't see this card.
+ */
+function BaselineComparison({
+  baseline,
+  livePnl,
+  liveTrades,
+  liveWinRate,
+}: {
+  baseline: BaselineSummary | null;
+  livePnl: number;
+  liveTrades: number;
+  liveWinRate: number;
+}) {
+  if (!baseline) return null;
+  if (baseline.status !== "completed" || baseline.total_pnl == null) {
+    return (
+      <div className="rounded-lg border border-base-300 bg-base-100 p-4">
+        <h3 className="font-semibold">Baseline backtest</h3>
+        <p className="text-sm opacity-70 mt-2">
+          Baseline run is {baseline.status}. Tracking comparison will
+          appear once it completes.
+        </p>
+      </div>
+    );
+  }
+
+  const bPnl = baseline.total_pnl ?? 0;
+  const bTrades = baseline.n_trades ?? 0;
+  const bWinRate = baseline.win_rate ?? 0;
+  // Expected live PnL: scale baseline PnL by the fraction of trades
+  // we've completed so far. liveTrades=0 → expected=0, no tracking
+  // signal yet. liveTrades=bTrades → expected=bPnl.
+  const completionRatio = bTrades > 0 ? liveTrades / bTrades : 0;
+  const expectedPnl = bPnl * completionRatio;
+  const trackingDelta = livePnl - expectedPnl;
+  const trackingTone =
+    trackingDelta >= 0 ? "text-success" : "text-error";
+
+  return (
+    <div className="rounded-lg border border-base-300 bg-base-100 p-4 space-y-3">
+      <div className="flex items-baseline justify-between gap-2 flex-wrap">
+        <h3 className="font-semibold">Baseline backtest vs live paper</h3>
+        <span className="text-[10px] uppercase tracking-widest opacity-50 font-mono">
+          {liveTrades}/{bTrades} trades · {(completionRatio * 100).toFixed(0)}% of baseline universe
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <SideStat
+          label="Backtest P&L"
+          value={`${bPnl >= 0 ? "+" : ""}$${bPnl.toFixed(2)}`}
+          accent={bPnl >= 0 ? "success" : "error"}
+        />
+        <SideStat
+          label="Paper P&L (live)"
+          value={`${livePnl >= 0 ? "+" : ""}$${livePnl.toFixed(2)}`}
+          accent={livePnl >= 0 ? "success" : "error"}
+        />
+        <SideStat
+          label="Tracking vs expected"
+          value={`${trackingDelta >= 0 ? "+" : ""}$${trackingDelta.toFixed(2)}`}
+          accent={trackingDelta >= 0 ? "success" : "error"}
+        />
+        <SideStat
+          label="Backtest win rate"
+          value={`${(bWinRate * 100).toFixed(1)}%`}
+        />
+        <SideStat
+          label="Paper win rate"
+          value={`${(liveWinRate * 100).toFixed(1)}%`}
+        />
+        <SideStat
+          label="Backtest Sharpe"
+          value={baseline.sharpe != null ? baseline.sharpe.toFixed(2) : "—"}
+        />
+      </div>
+
+      <p className={`text-xs ${trackingTone}`}>
+        {liveTrades === 0
+          ? "Waiting for the first live trade to start tracking."
+          : trackingDelta >= 0
+            ? `Live paper is ahead of the backtest by $${trackingDelta.toFixed(2)} at this trade count — the strategy is so far validating out-of-sample.`
+            : `Live paper is behind by $${Math.abs(trackingDelta).toFixed(2)} vs what the backtest predicted at this trade count. Could be regime shift, slippage assumptions, or noise — let it run more trades.`}
+      </p>
+    </div>
+  );
+}
+
+function SideStat({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: "success" | "error";
+}) {
+  const color =
+    accent === "success" ? "text-success" : accent === "error" ? "text-error" : "";
+  return (
+    <div className="rounded-md border border-base-300/60 bg-base-200/40 p-2.5">
+      <div className="text-[10px] uppercase tracking-widest opacity-60">{label}</div>
+      <div className={`font-semibold mt-1 font-mono tabular-nums ${color}`}>{value}</div>
     </div>
   );
 }

@@ -330,8 +330,20 @@ def evaluate_one(
     return False
 
 
-def evaluate_section(
-    conditions: list[dict[str, Any]],
+def _is_group(node: Any) -> bool:
+    """A group node has an `op` of AND/OR and a `children` list. Leaves
+    have an `op` from the comparison set (>=, crosses_above, etc.). The
+    set disjointedness is what lets us auto-detect without a dedicated
+    `kind` field — keeps the JSON wire format compact."""
+    return (
+        isinstance(node, dict)
+        and node.get("op") in ("AND", "OR")
+        and isinstance(node.get("children"), list)
+    )
+
+
+def evaluate_node(
+    node: Any,
     snapshot: OrderBookSnapshot,
     *,
     resolution_at: datetime | None = None,
@@ -339,19 +351,98 @@ def evaluate_section(
     history: list[OrderBookSnapshot] | None = None,
     cross_state: dict[str, float] | None = None,
 ) -> bool:
-    """AND across all conditions in the section."""
-    if not conditions:
+    """Recursive node evaluator. Groups: AND requires all children True,
+    OR requires any. Leaves: defer to evaluate_one.
+
+    Empty groups: AND-empty → False (don't fire on a section with no
+    conditions, matches Phase M behaviour), OR-empty → False (no child
+    can satisfy).
+
+    Cross-state caveat: when an OR group short-circuits after a True
+    child, the remaining children's lhs values are NOT recorded for
+    crosses_above/below detection. This is intentional — we want the
+    cross to fire when the first transition happens, not be masked by
+    sibling truth. Same convention TradingView uses on its multi-
+    condition alerts."""
+    if _is_group(node):
+        op = node["op"]
+        children = node["children"] or []
+        if op == "AND":
+            if not children:
+                return False
+            for child in children:
+                if not evaluate_node(
+                    child, snapshot,
+                    resolution_at=resolution_at,
+                    market_open=market_open,
+                    history=history,
+                    cross_state=cross_state,
+                ):
+                    return False
+            return True
+        elif op == "OR":
+            for child in children:
+                if evaluate_node(
+                    child, snapshot,
+                    resolution_at=resolution_at,
+                    market_open=market_open,
+                    history=history,
+                    cross_state=cross_state,
+                ):
+                    return True
+            return False
         return False
-    for c in conditions:
-        if not evaluate_one(
-            c, snapshot,
+    # Leaf — single primitive
+    return evaluate_one(
+        node, snapshot,
+        resolution_at=resolution_at,
+        market_open=market_open,
+        history=history,
+        cross_state=cross_state,
+    )
+
+
+def evaluate_section(
+    conditions: Any,
+    snapshot: OrderBookSnapshot,
+    *,
+    resolution_at: datetime | None = None,
+    market_open: OrderBookSnapshot | None = None,
+    history: list[OrderBookSnapshot] | None = None,
+    cross_state: dict[str, float] | None = None,
+) -> bool:
+    """Evaluate an entry / TP / SL section.
+
+    Accepts EITHER:
+      - A flat `list[dict]` of conditions — treated as an implicit AND
+        group (Phase M format, preserved for every stored backtest and
+        for the Calibration / Templates / Saved-strategies hand-offs).
+      - A `dict` group node `{"op": "AND"|"OR", "children": [...]}`
+        with arbitrary nesting (Phase T).
+
+    Empty section → False (don't fire), matches Phase M.
+    """
+    if conditions is None:
+        return False
+    if isinstance(conditions, list):
+        if not conditions:
+            return False
+        # Implicit AND wrapper for the legacy flat-list form.
+        return evaluate_node(
+            {"op": "AND", "children": conditions},
+            snapshot,
             resolution_at=resolution_at,
             market_open=market_open,
             history=history,
             cross_state=cross_state,
-        ):
-            return False
-    return True
+        )
+    return evaluate_node(
+        conditions, snapshot,
+        resolution_at=resolution_at,
+        market_open=market_open,
+        history=history,
+        cross_state=cross_state,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,27 +497,55 @@ def _humanise_condition(c: dict[str, Any]) -> str:
     return f"{ctype} {op} {val}"
 
 
+def _humanise_node(node: Any) -> str:
+    """Render a node (leaf or group) as a one-line plain-English string.
+
+    Groups are wrapped in parens so precedence is unambiguous even when
+    nested: `((A AND B) OR C) AND D`. Top-level callers strip the outer
+    parens for readability (see `humanise`)."""
+    if _is_group(node):
+        op = node["op"]
+        children = node.get("children") or []
+        if not children:
+            return "(no rules)"
+        parts = [_humanise_node(c) for c in children]
+        joiner = f" {op} "
+        if len(parts) == 1:
+            return parts[0]
+        return "(" + joiner.join(parts) + ")"
+    return _humanise_condition(node)
+
+
+def _humanise_section(section: Any) -> str | None:
+    """Top-level section renderer — strips the outer parens of an AND
+    group so a simple AND-joined section reads `A AND B` not `(A AND B)`.
+    Returns None for an empty section so callers can hide the line."""
+    if section is None:
+        return None
+    if isinstance(section, list):
+        if not section:
+            return None
+        return " AND ".join(_humanise_condition(c) for c in section)
+    if _is_group(section):
+        if not section.get("children"):
+            return None
+        rendered = _humanise_node(section)
+        # Strip the outer parens we added for the implicit wrap.
+        if rendered.startswith("(") and rendered.endswith(")"):
+            return rendered[1:-1]
+        return rendered
+    return None
+
+
 def humanise(
     *,
-    entry: list[dict[str, Any]],
-    take_profit: list[dict[str, Any]] | None,
-    stop_loss: list[dict[str, Any]] | None,
+    entry: Any,
+    take_profit: Any,
+    stop_loss: Any,
     trade_logic: str,
 ) -> ReadAs:
-    entry_en = (
-        " AND ".join(_humanise_condition(c) for c in entry)
-        if entry
-        else "no entry rules"
-    )
-    tp_en = (
-        " AND ".join(_humanise_condition(c) for c in take_profit)
-        if take_profit
-        else None
-    )
-    sl_en = (
-        " AND ".join(_humanise_condition(c) for c in stop_loss)
-        if stop_loss
-        else None
-    )
+    entry_en = _humanise_section(entry) or "no entry rules"
+    tp_en = _humanise_section(take_profit)
+    sl_en = _humanise_section(stop_loss)
     logic_en = "buy UP" if trade_logic == "always_up" else "buy DOWN"
     return ReadAs(entry=entry_en, take_profit=tp_en, stop_loss=sl_en, trade_logic=logic_en)

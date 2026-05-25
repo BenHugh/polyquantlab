@@ -66,6 +66,10 @@ class CreatePaperStrategyRequest(BaseModel):
     ticker: str | None = Field(default=None, examples=["BTC", "ETH", "SOL"])
     event_type: str | None = Field(default=None, examples=["5m", "15m", "1h", "4h", "daily_up_down"])
     size_usd: float = Field(default=10, ge=1, le=10_000)
+    # Phase U.3 — populated when the "Run as paper trade" CTA in
+    # Strategy Builder simultaneously submits a backtest with the same
+    # spec. Powers the backtest-vs-paper comparison on the detail page.
+    baseline_backtest_id: str | None = Field(default=None, max_length=64)
 
 
 # ---------------------------------------------------------------------------
@@ -124,12 +128,27 @@ async def create_strategy(
             ),
         )
 
-    # Basic strategy_spec sanity — it must declare a `type` matching one
-    # of the built-in strategies.
+    # Basic strategy_spec sanity — it must declare a `type` from the
+    # registry. Phase M added "condition_based" alongside the three
+    # legacy presets; the worker now handles all four.
     if not isinstance(body.strategy_spec, dict) or "type" not in body.strategy_spec:
         raise HTTPException(
             status_code=400,
             detail="strategy_spec must be a JSON object with a 'type' key.",
+        )
+    ALLOWED_TYPES = {
+        "threshold_entry",
+        "mean_reversion",
+        "time_before_resolution",
+        "condition_based",
+    }
+    if body.strategy_spec.get("type") not in ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"strategy_spec.type must be one of {sorted(ALLOWED_TYPES)}; "
+                f"got {body.strategy_spec.get('type')!r}."
+            ),
         )
 
     created = await paper_db.create_strategy(
@@ -140,6 +159,7 @@ async def create_strategy(
         ticker=body.ticker,
         event_type=body.event_type,
         size_usd=body.size_usd,
+        baseline_backtest_id=body.baseline_backtest_id,
     )
     return created
 

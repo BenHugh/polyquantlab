@@ -89,15 +89,17 @@ async def create_strategy(
     ticker: str | None,
     event_type: str | None,
     size_usd: float,
+    baseline_backtest_id: str | None = None,
 ) -> dict[str, Any]:
     row = await pool.fetchrow(
         """
         INSERT INTO paper_strategies (
-            user_email, name, strategy_spec, ticker, event_type, size_usd
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            user_email, name, strategy_spec, ticker, event_type, size_usd,
+            baseline_backtest_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING paper_strategy_id, user_email, name, strategy_spec,
                   ticker, event_type, size_usd, started_at, paused_at,
-                  active, created_at, updated_at
+                  active, created_at, updated_at, baseline_backtest_id
         """,
         user_email,
         name,
@@ -105,6 +107,7 @@ async def create_strategy(
         ticker,
         event_type,
         size_usd,
+        baseline_backtest_id,
     )
     return _strategy_row_to_dict(row)
 
