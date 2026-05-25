@@ -25,7 +25,12 @@ from backtest.data_loader import (
     load_resolution,
     load_snapshots,
 )
-from backtest.slippage import platform_fee, settlement_payoff, walk_book
+from backtest.slippage import (
+    platform_fee,
+    settlement_payoff,
+    walk_book,
+    walk_book_to_sell_shares,
+)
 from backtest.strategies import build_strategy
 from backtest.types import (
     BacktestResult,
@@ -162,21 +167,23 @@ def _replay_single_market(
             entry_side, entry_price, entry_usd, entry_idx = open_position
             close_side = _close_side(entry_side)
             shares = entry_usd / entry_price if entry_price > 0 else 0.0
-            close_fill = walk_book(snap, close_side, shares)
+            # Exits need a share→USD walk (we have N shares, want to hit
+            # the bids until they're gone), not walk_book's USD→USD path.
+            close_fill = walk_book_to_sell_shares(snap, close_side, shares)
             if close_fill is None:
                 # Thin book — defer to next snapshot.
                 continue
-            close_price, close_filled, close_slip = close_fill
-            close_fee = platform_fee(_platform_of(snap.market_id), close_filled, close_price)
+            close_price, close_usd_received, close_slip = close_fill
+            close_fee = platform_fee(_platform_of(snap.market_id), close_usd_received, close_price)
             fees_total += close_fee
-            round_trip_pnl = close_filled - entry_usd
+            round_trip_pnl = close_usd_received - entry_usd
             trades.append(
                 Trade(
                     ts=snap.ts,
                     market_id=snap.market_id,
                     side=close_side,
                     price=close_price,
-                    size=close_filled,
+                    size=close_usd_received,
                     slippage_bps=close_slip,
                     fees=close_fee,
                     pnl=round_trip_pnl,

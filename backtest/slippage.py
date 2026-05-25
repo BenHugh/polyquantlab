@@ -116,6 +116,47 @@ def walk_book(
     return avg_price, filled_usd, slippage_bps
 
 
+def walk_book_to_sell_shares(
+    snapshot: OrderBookSnapshot,
+    side: Side,
+    shares: float,
+) -> tuple[float, float, float] | None:
+    """Exit-side companion to walk_book.
+
+    Convert a known share count back to USD by walking the bids on the
+    SELL side of the book. Returns (avg_fill_price, usd_received,
+    slippage_bps) or None if the book is empty / can't absorb any
+    shares.
+
+    This is the right helper for TP/SL exits: at entry we know how
+    many USD we spent; converting to shares is straightforward, but
+    converting those shares back to USD when closing requires
+    walking the bid side of the close-side book.
+    """
+    levels = _book_for_side(snapshot, side)
+    if not levels or shares <= 0:
+        return None
+    best = levels[0].price
+    if best <= 0 or best >= 1:
+        return None
+
+    remaining_shares = shares
+    total_usd = 0.0
+    total_shares_taken = 0.0
+    for level in levels:
+        take_shares = min(remaining_shares, level.size)
+        total_usd += take_shares * level.price
+        total_shares_taken += take_shares
+        remaining_shares -= take_shares
+        if remaining_shares <= 0:
+            break
+    if total_shares_taken <= 0:
+        return None
+    avg_price = total_usd / total_shares_taken
+    slippage_bps = abs(avg_price - best) * 10000.0
+    return avg_price, total_usd, slippage_bps
+
+
 def settlement_payoff(
     side: Side,
     avg_fill_price: float,
