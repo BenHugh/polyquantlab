@@ -177,6 +177,19 @@ export default function Page() {
                 icon={<IconValidate />}
               />
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-5">
+              <FeatureCard
+                title="Live Terminal"
+                body="Currently-trading 5m/15m/1h/4h/daily markets side by side with Binance spot. Mispricing badges surface when implied probability diverges from historical Up rate by 5pp+."
+                icon={<IconActivity />}
+              />
+              <FeatureCard
+                title="120-day retention"
+                body="Twice the lookback window PolyBackTest offers. Long enough to backtest across regime shifts, not just last month's tape."
+                icon={<IconClock />}
+              />
+            </div>
           </div>
         </section>
 
@@ -320,6 +333,21 @@ function IconValidate() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+function IconActivity() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+    </svg>
+  );
+}
+function IconClock() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
     </svg>
   );
 }

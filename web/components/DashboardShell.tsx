@@ -45,6 +45,11 @@ const NAV: NavItem[] = [
     icon: <IconList />,
   },
   {
+    href: "/dashboard/live",
+    label: "Live Terminal",
+    icon: <IconActivity />,
+  },
+  {
     href: "/dashboard/backtest",
     label: "Backtest",
     icon: <IconCharts />,
@@ -260,6 +265,13 @@ function IconPlay() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <polygon points="6,4 20,12 6,20" fill="currentColor" />
+    </svg>
+  );
+}
+function IconActivity() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
     </svg>
   );
 }
