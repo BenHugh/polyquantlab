@@ -16,7 +16,7 @@
  */
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import toast from "react-hot-toast";
 import { generatePython, type CodegenGroup, type CodegenSpec } from "@/libs/pythonCodegen";
 
@@ -560,12 +560,18 @@ export default function StrategyBuilder() {
         // (and any later refresh) sees the hand-off applied.
         try {
           localStorage.setItem(LOCAL_KEY, JSON.stringify(merged));
-        } catch {}
+        } catch {
+          /* storage full / private mode — recoverable next load */
+        }
         localStorage.removeItem("pql-strategy-builder-prefill");
         prefilled = true;
       }
     } catch {
-      try { localStorage.removeItem("pql-strategy-builder-prefill"); } catch {}
+      try {
+        localStorage.removeItem("pql-strategy-builder-prefill");
+      } catch {
+        /* nothing to clean up; ignore */
+      }
     }
     if (!prefilled) {
       const stored = loadStored();
@@ -1594,31 +1600,30 @@ function Section({
   n: string;
   title: string;
   subtitle: string;
-  children: React.ReactNode;
+  children: ReactNode;
   readsAs?: string | null;
   emptyHint?: string;
 }) {
+  // Pro-quant panel — see `.q-panel` block in globals.css. Sharper corners,
+  // hairline border + a tiny left-accent strip that lights up on focus-within,
+  // mono section-number badge à la Bloomberg field references.
   return (
-    <section className="rounded-xl border border-base-300 bg-base-200/30 overflow-hidden">
-      <div className="px-5 py-4 border-b border-base-300/60 flex items-baseline justify-between">
-        <div>
-          <span className="badge badge-sm badge-ghost font-mono mr-2">
-            {n}
-          </span>
-          <span className="font-semibold tracking-tight">{title}</span>
+    <section className="q-panel">
+      <header className="q-panel-header">
+        <div className="flex items-center gap-2.5">
+          <span className="q-num-badge">{n}</span>
+          <h3 className="q-section-title">{title}</h3>
         </div>
-        <span className="text-xs text-base-content/50">{subtitle}</span>
-      </div>
+        <span className="q-section-subtitle">{subtitle}</span>
+      </header>
       <div className="p-5 space-y-3">{children}</div>
       {(readsAs || emptyHint) && (
-        <div className="px-5 py-3 border-t border-base-300/60 bg-base-200/40 text-xs">
-          <div className="text-[10px] uppercase tracking-widest text-base-content/40 mb-1">
-            Reads as
+        <>
+          <div className="q-readout-eyebrow">Reads as</div>
+          <div className={`q-readout ${readsAs ? "" : "q-readout-empty"}`}>
+            <span>{readsAs ?? emptyHint}</span>
           </div>
-          <div className="text-base-content/70 font-mono">
-            {readsAs ?? emptyHint}
-          </div>
-        </div>
+        </>
       )}
     </section>
   );
@@ -1629,13 +1634,14 @@ function Field({
   children,
 }: {
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
+  // Pro-quant label — JetBrains Mono uppercase tracking. Aligns visually
+  // with the Generated-Code tab and the "Reads as" readout so the whole
+  // builder reads as one continuous typographic system.
   return (
     <label className="block">
-      <span className="text-[10px] uppercase tracking-widest text-base-content/50 block mb-1">
-        {label}
-      </span>
+      <span className="q-label">{label}</span>
       {children}
     </label>
   );

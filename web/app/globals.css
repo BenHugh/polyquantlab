@@ -221,13 +221,17 @@ table tbody tr:hover {
 select.select {
   appearance: none;
   background-color: var(--color-base-100);
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
-                    linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 14px) center, calc(100% - 9px) center;
-  background-size: 5px 5px, 5px 5px;
+  /* Single thin chevron (Bloomberg / Hyperliquid style) — replaces the
+     default browser/daisyUI two-triangle composite. Stroke uses
+     currentColor with 0.55 alpha so it dims into the surface; on hover
+     the alpha lifts to 0.85 in the rule below. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23a0a8b8' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 10px center;
+  background-size: 10px 6px;
   background-repeat: no-repeat;
-  padding-right: 28px;
+  padding-right: 26px;
   border: 1px solid oklch(50% 0.01 250 / 0.25);
+  font-feature-settings: "tnum", "ss01";
   transition: border-color 150ms ease, box-shadow 150ms ease,
               background-color 150ms ease;
 }
@@ -251,6 +255,7 @@ input.input,
 textarea.textarea {
   border: 1px solid oklch(50% 0.01 250 / 0.25);
   background-color: var(--color-base-100);
+  font-feature-settings: "tnum", "ss01";
   transition: border-color 150ms ease, box-shadow 150ms ease,
               background-color 150ms ease;
 }
@@ -264,6 +269,175 @@ select.select:focus {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px oklch(70% 0.18 155 / 0.15);
+}
+
+/* Tighter `-sm` size — daisyUI's default sm is sized for general SaaS;
+   a quant terminal feels right ~28-30px tall. */
+.select-sm.select,
+.input-sm.input {
+  height: 1.875rem;
+  min-height: 1.875rem;
+  font-size: 0.8125rem;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.select-sm.select { padding-right: 24px; background-position: right 8px center; }
+
+/* Number/datetime inputs always render with the tabular monospace font.
+   Quant work happens in columns of digits — they MUST line up. */
+input[type="number"].input,
+input[type="datetime-local"].input,
+input[type="date"].input,
+input[type="time"].input {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+}
+
+/* Remove the spinner buttons on number inputs — they're 1995 chrome
+   that pulls the eye and almost no one uses. (Hold-shift + arrow on
+   the keyboard still works for keyboard increments.) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] { -moz-appearance: textfield; }
+
+/* ============================================================================
+ * Pro-quant panel + label utilities — Phase AA
+ *
+ * Opt-in classes that give Strategy Builder / Sweep / paper-detail a
+ * "Bloomberg terminal" panel feel without rewriting JSX globally. Two
+ * principles:
+ *   1. Hairline borders, 6px max radius — restraint over playfulness
+ *   2. JetBrains Mono for labels + readouts — signals "infrastructure",
+ *      keeps numeric alignment, matches the Generated-Code tab
+ * Apply with className="q-panel", q-label, q-readout, etc.
+ * ============================================================================ */
+
+.q-panel {
+  border: 1px solid oklch(28% 0.013 250 / 0.55);
+  background: linear-gradient(180deg,
+    oklch(19% 0.014 250 / 0.7),
+    oklch(17% 0.013 250 / 0.5));
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 200ms ease, background 200ms ease;
+}
+.q-panel:hover {
+  border-color: oklch(34% 0.018 250 / 0.7);
+}
+.q-panel::before {
+  /* Hairline left accent — invisible by default, lights up while any
+     descendant input has focus. Quiet signal that "this section is live". */
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: var(--color-primary);
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+.q-panel:focus-within::before {
+  opacity: 0.75;
+}
+
+.q-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid oklch(28% 0.013 250 / 0.45);
+  background: oklch(15% 0.013 250 / 0.45);
+}
+
+.q-num-badge {
+  /* Section number — mono in a tight 18px frame, evokes a Bloomberg
+     field reference like "S1" / "S2". */
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: oklch(70% 0.005 250 / 0.7);
+  border: 1px solid oklch(28% 0.013 250 / 0.85);
+  padding: 0 6px;
+  border-radius: 3px;
+  background: oklch(13% 0.012 250 / 0.6);
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  min-width: 26px;
+  justify-content: center;
+}
+
+.q-section-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: oklch(94% 0.005 250);
+}
+.q-section-subtitle {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: oklch(70% 0.005 250 / 0.55);
+  letter-spacing: 0.02em;
+}
+
+.q-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: oklch(70% 0.005 250 / 0.6);
+  margin-bottom: 0.375rem;
+}
+
+.q-readout {
+  /* Terminal-style "Reads as" output — mono, dim-green prefix glyph */
+  padding: 0.5625rem 1rem;
+  border-top: 1px solid oklch(28% 0.013 250 / 0.45);
+  background: oklch(13% 0.012 250 / 0.65);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: oklch(85% 0.04 150 / 0.85);
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.q-readout::before {
+  content: "›";
+  color: oklch(72% 0.18 150 / 0.7);
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.q-readout-empty {
+  color: oklch(70% 0.005 250 / 0.45);
+}
+.q-readout-empty::before {
+  color: oklch(70% 0.005 250 / 0.35);
+}
+
+.q-readout-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: oklch(70% 0.005 250 / 0.4);
+  padding: 0.375rem 1rem 0;
+  background: oklch(13% 0.012 250 / 0.65);
+  border-top: 1px solid oklch(28% 0.013 250 / 0.45);
+}
+.q-readout-eyebrow + .q-readout {
+  border-top: none;
+  padding-top: 0.25rem;
 }
 
 /* Date / time pickers — the calendar/clock indicator inherits foreground

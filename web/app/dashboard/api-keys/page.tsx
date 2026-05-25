@@ -1,3 +1,4 @@
+import Link from "next/link";
 import ApiKeysClient from "@/components/ApiKeysClient";
 import PageHeader from "@/components/PageHeader";
 import { getSubscription, listApiKeys } from "@/libs/fastapi";
@@ -53,9 +54,9 @@ export default async function ApiKeysPage({
               {subscription.tier_display}
             </span>
             {subscription.tier === "free" && (
-              <a className="link link-primary link-hover text-xs ml-auto" href="/#pricing">
+              <Link className="link link-primary link-hover text-xs ml-auto" href="/#pricing">
                 Upgrade →
-              </a>
+              </Link>
             )}
           </div>
           <div className="text-base-content/60 text-xs">

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import AnimatedCounter from "@/components/AnimatedCounter";
 import ButtonSignin from "@/components/ButtonSignin";
 import Pricing from "@/components/Pricing";
@@ -281,7 +282,7 @@ function FeatureCard({
 }: {
   title: string;
   body: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   accent?: boolean;
 }) {
   return (

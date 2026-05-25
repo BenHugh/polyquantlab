@@ -26,7 +26,7 @@ import {
   formatDateTime as formatDate,
   formatTimeOnly as formatTime,
 } from "@/libs/formatDate";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 export interface MarketMeta {
   market_id: string;
@@ -235,7 +235,7 @@ function Stat({
   accent,
 }: {
   label: string;
-  value: React.ReactNode;
+  value: ReactNode;
   accent?: "success" | "error";
 }) {
   const color =

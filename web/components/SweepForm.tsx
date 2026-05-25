@@ -201,16 +201,25 @@ export default function SweepForm({
 
   const sweepableForType = SWEEPABLE_PARAMS[strategyType];
 
+  // Pro-quant panel layout — each logical section is a q-panel with a
+  // numbered mono badge header, matching Strategy Builder so the two
+  // configurator pages feel like one product. See globals.css `.q-panel`.
   return (
-    <div className="space-y-6 rounded-lg border border-base-300 bg-base-100 p-6">
+    <div className="space-y-4">
       {/* Universe */}
-      <fieldset className="space-y-3">
-        <legend className="font-semibold">Universe</legend>
-        <div className="grid grid-cols-2 gap-4">
-          <label className="form-control">
-            <span className="label-text">Ticker</span>
+      <section className="q-panel">
+        <header className="q-panel-header">
+          <div className="flex items-center gap-2.5">
+            <span className="q-num-badge">S1</span>
+            <h3 className="q-section-title">Universe</h3>
+          </div>
+          <span className="q-section-subtitle">market scope</span>
+        </header>
+        <div className="p-5 grid grid-cols-2 gap-4">
+          <label className="block">
+            <span className="q-label">Ticker</span>
             <select
-              className="select select-bordered"
+              className="select select-sm select-bordered w-full"
               value={ticker}
               onChange={(e) => setTicker(e.target.value as typeof ticker)}
             >
@@ -219,14 +228,11 @@ export default function SweepForm({
               ))}
             </select>
           </label>
-          <label className="form-control">
-            <span className="label-text">
-              Market limit{" "}
-              <span className="opacity-60">(max {maxMarketLimit})</span>
-            </span>
+          <label className="block">
+            <span className="q-label">Market limit · max {maxMarketLimit}</span>
             <input
               type="number"
-              className="input input-bordered"
+              className="input input-sm input-bordered w-full"
               min={1}
               max={maxMarketLimit}
               value={marketLimit}
@@ -238,15 +244,22 @@ export default function SweepForm({
             />
           </label>
         </div>
-      </fieldset>
+      </section>
 
       {/* Strategy + pinned params */}
-      <fieldset className="space-y-3 border-t border-base-300 pt-4">
-        <legend className="font-semibold">Strategy (pinned values)</legend>
-        <label className="form-control">
-          <span className="label-text">Type</span>
+      <section className="q-panel">
+        <header className="q-panel-header">
+          <div className="flex items-center gap-2.5">
+            <span className="q-num-badge">S2</span>
+            <h3 className="q-section-title">Strategy · pinned values</h3>
+          </div>
+          <span className="q-section-subtitle">params not swept</span>
+        </header>
+        <div className="p-5 space-y-3">
+        <label className="block">
+          <span className="q-label">Type</span>
           <select
-            className="select select-bordered"
+            className="select select-sm select-bordered w-full"
             value={strategyType}
             onChange={(e) => switchStrategy(e.target.value as StrategyType)}
           >
@@ -299,60 +312,81 @@ export default function SweepForm({
             </>
           )}
         </div>
-      </fieldset>
+        </div>
+      </section>
 
       {/* X axis */}
-      <AxisFieldset
-        title="X axis"
-        axis={xAxis}
-        onChange={setXAxis}
-        sweepable={sweepableForType}
-      />
+      <section className="q-panel">
+        <header className="q-panel-header">
+          <div className="flex items-center gap-2.5">
+            <span className="q-num-badge">X</span>
+            <h3 className="q-section-title">X axis · sweep this</h3>
+          </div>
+          <span className="q-section-subtitle">primary dimension</span>
+        </header>
+        <div className="p-5">
+          <AxisFieldset
+            axis={xAxis}
+            onChange={setXAxis}
+            sweepable={sweepableForType}
+          />
+        </div>
+      </section>
 
       {/* Y axis */}
-      <fieldset className="space-y-3 border-t border-base-300 pt-4">
-        <legend className="font-semibold flex items-center gap-3">
-          Y axis
-          <label className="label cursor-pointer gap-2 normal-case font-normal text-sm">
+      <section className="q-panel">
+        <header className="q-panel-header">
+          <div className="flex items-center gap-2.5">
+            <span className="q-num-badge">Y</span>
+            <h3 className="q-section-title">Y axis · 2D sweep</h3>
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
-              className="checkbox checkbox-sm"
+              className="checkbox checkbox-xs checkbox-accent"
               checked={enableYAxis}
               onChange={(e) => setEnableYAxis(e.target.checked)}
             />
-            <span className="label-text">Enable (2D sweep)</span>
+            <span className="q-section-subtitle">
+              {enableYAxis ? "enabled · heatmap" : "disabled · 1D sweep"}
+            </span>
           </label>
-        </legend>
+        </header>
         {enableYAxis && (
-          <AxisFieldset
-            title=""
-            axis={yAxis}
-            onChange={setYAxis}
-            sweepable={sweepableForType.filter((p) => p.key !== xAxis.param)}
-          />
+          <div className="p-5">
+            <AxisFieldset
+              axis={yAxis}
+              onChange={setYAxis}
+              sweepable={sweepableForType.filter((p) => p.key !== xAxis.param)}
+            />
+          </div>
         )}
-      </fieldset>
+      </section>
 
       {/* Summary + submit */}
-      <div className="flex items-center justify-between border-t border-base-300 pt-4">
-        <div className="text-sm">
-          <strong>{totalCells}</strong> backtest{totalCells === 1 ? "" : "s"}
-          {" "}× <strong>{marketLimit}</strong> markets ={" "}
-          <strong>{(totalCells * marketLimit).toLocaleString()}</strong> simulated runs
-          {totalCells > maxSweepCells && (
-            <div className="text-error text-xs mt-1">
-              Exceeds your tier cap of {maxSweepCells} cells.
-            </div>
-          )}
+      <section className="q-panel">
+        <div className="px-5 py-4 flex items-center justify-between gap-4">
+          <div className="font-mono text-xs text-base-content/70 tabular-nums">
+            <span className="text-base-content font-semibold">{totalCells}</span> backtest{totalCells === 1 ? "" : "s"}
+            <span className="text-base-content/30 mx-1.5">×</span>
+            <span className="text-base-content font-semibold">{marketLimit}</span> markets
+            <span className="text-base-content/30 mx-1.5">=</span>
+            <span className="text-primary font-semibold">{(totalCells * marketLimit).toLocaleString()}</span> simulated runs
+            {totalCells > maxSweepCells && (
+              <div className="text-error text-[11px] mt-1">
+                Exceeds tier cap of {maxSweepCells} cells.
+              </div>
+            )}
+          </div>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={submit}
+            disabled={submitting || totalCells > maxSweepCells}
+          >
+            {submitting ? "Submitting…" : "Run sweep →"}
+          </button>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={submit}
-          disabled={submitting || totalCells > maxSweepCells}
-        >
-          {submitting ? "Submitting…" : "Run sweep"}
-        </button>
-      </div>
+      </section>
     </div>
   );
 }
@@ -362,67 +396,61 @@ export default function SweepForm({
 // ---------------------------------------------------------------------------
 
 function AxisFieldset({
-  title,
   axis,
   onChange,
   sweepable,
 }: {
-  title: string;
   axis: AxisState;
   onChange: (a: AxisState) => void;
   sweepable: ParamSpec[];
 }) {
-  const Wrap: any = title ? "fieldset" : "div";
   return (
-    <Wrap className={title ? "space-y-3 border-t border-base-300 pt-4" : "space-y-3"}>
-      {title && <legend className="font-semibold">{title}</legend>}
-      <div className="grid grid-cols-4 gap-3">
-        <label className="form-control">
-          <span className="label-text">Param</span>
-          <select
-            className="select select-bordered select-sm"
-            value={axis.param}
-            onChange={(e) => {
-              const p = sweepable.find((s) => s.key === e.target.value);
-              if (!p) return;
-              onChange({
-                ...axis,
-                param: p.key,
-                start: p.defaultStart,
-                end: p.defaultEnd,
-              });
-            }}
-          >
-            {sweepable.map((p) => (
-              <option key={p.key} value={p.key}>{p.label}</option>
-            ))}
-          </select>
-        </label>
-        <NumberField
-          label="From"
-          value={axis.start}
-          step={0.05}
-          onChange={(v) => onChange({ ...axis, start: v })}
-          small
-        />
-        <NumberField
-          label="To"
-          value={axis.end}
-          step={0.05}
-          onChange={(v) => onChange({ ...axis, end: v })}
-          small
-        />
-        <NumberField
-          label="Steps"
-          value={axis.steps}
-          step={1}
-          min={2}
-          max={50}
-          onChange={(v) => onChange({ ...axis, steps: Math.round(v) })}
-          small
-        />
-      </div>
-    </Wrap>
+    <div className="grid grid-cols-4 gap-3">
+      <label className="block">
+        <span className="q-label">Param</span>
+        <select
+          className="select select-sm select-bordered w-full"
+          value={axis.param}
+          onChange={(e) => {
+            const p = sweepable.find((s) => s.key === e.target.value);
+            if (!p) return;
+            onChange({
+              ...axis,
+              param: p.key,
+              start: p.defaultStart,
+              end: p.defaultEnd,
+            });
+          }}
+        >
+          {sweepable.map((p) => (
+            <option key={p.key} value={p.key}>{p.label}</option>
+          ))}
+        </select>
+      </label>
+      <NumberField
+        label="From"
+        value={axis.start}
+        step={0.05}
+        onChange={(v) => onChange({ ...axis, start: v })}
+        small
+      />
+      <NumberField
+        label="To"
+        value={axis.end}
+        step={0.05}
+        onChange={(v) => onChange({ ...axis, end: v })}
+        small
+      />
+      <NumberField
+        label="Steps"
+        value={axis.steps}
+        step={1}
+        min={2}
+        max={50}
+        onChange={(v) => onChange({ ...axis, steps: Math.round(v) })}
+        small
+      />
+    </div>
   );
 }
 
@@ -438,11 +466,11 @@ function NumberField({
   small?: boolean;
 }) {
   return (
-    <label className="form-control">
-      <span className="label-text">{label}</span>
+    <label className="block">
+      <span className="q-label">{label}</span>
       <input
         type="number"
-        className={`input input-bordered ${small ? "input-sm" : ""}`}
+        className={`input input-bordered w-full ${small ? "input-sm" : "input-sm"}`}
         step={step}
         min={min}
         max={max}
@@ -465,10 +493,10 @@ function SelectField({
   onChange: (v: string) => void;
 }) {
   return (
-    <label className="form-control">
-      <span className="label-text">{label}</span>
+    <label className="block">
+      <span className="q-label">{label}</span>
       <select
-        className="select select-bordered"
+        className="select select-sm select-bordered w-full"
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
