@@ -65,6 +65,11 @@ const NAV: NavItem[] = [
     icon: <IconGridDense />,
   },
   {
+    href: "/dashboard/backtests",
+    label: "Saved backtests",
+    icon: <IconBookmark />,
+  },
+  {
     href: "/dashboard/stats/calibration",
     label: "Calibration",
     icon: <IconSparkles />,
@@ -270,6 +275,13 @@ function IconPlay() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <polygon points="6,4 20,12 6,20" fill="currentColor" />
+    </svg>
+  );
+}
+function IconBookmark() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
     </svg>
   );
 }

@@ -22,6 +22,52 @@ const FASTAPI_BASE_URL =
   process.env.FASTAPI_BASE_URL || "http://localhost:8000";
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "";
 
+export async function GET(request: Request) {
+  // Server-side proxy for the Saved Backtests page. We mirror the
+  // fastapiProxy pattern but keep it inline here so the existing POST
+  // doesn't need refactoring — both handlers reuse the same internal-
+  // secret bridge.
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!INTERNAL_API_SECRET) {
+    return NextResponse.json(
+      { error: "Server misconfigured: INTERNAL_API_SECRET unset" },
+      { status: 500 }
+    );
+  }
+  // Forward query params verbatim (limit / offset).
+  const url = new URL(request.url);
+  const upstream = `${FASTAPI_BASE_URL}/v1/backtest${url.search}`;
+  try {
+    const res = await fetch(upstream, {
+      headers: {
+        "X-Internal-Secret": INTERNAL_API_SECRET,
+        Connection: "close",
+      },
+      cache: "no-store",
+    });
+    const text = await res.text();
+    return new Response(text, {
+      status: res.status,
+      headers: {
+        "Content-Type":
+          res.headers.get("Content-Type") || "application/json",
+      },
+    });
+  } catch (e: any) {
+    console.error("[api/backtest GET]", e);
+    return NextResponse.json(
+      { error: "Upstream API unavailable" },
+      { status: 502 }
+    );
+  }
+}
+
 export async function POST(request: Request) {
   const supabase = await createClient();
   const {

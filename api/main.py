@@ -933,6 +933,49 @@ async def get_polymarket_live_board(
 
         ts_, yb, ya, nb, na, mid_yes, spread, underlying = snap.result_rows[0]
 
+        # "Price to beat": the BTC spot at the moment we first saw this
+        # market trade. For Polymarket's "Up or Down" markets, the
+        # resolution criterion is BTC at resolution_at vs BTC at market
+        # open — and our first recorded snapshot is the closest proxy
+        # we have to "market open" without parsing the slug or relying
+        # on raw Gamma metadata. Worth ~30 ms / call on ClickHouse;
+        # cached implicitly by the primary key (market_id, ts).
+        first_snap = await ch.query(
+            """
+            SELECT underlying_price
+              FROM orderbook_snapshots
+             WHERE market_id = {market_id:String}
+               AND underlying_price IS NOT NULL
+             ORDER BY ts ASC LIMIT 1
+            """,
+            parameters={"market_id": market_id},
+        )
+        price_to_beat: float | None = None
+        if first_snap.result_rows and first_snap.result_rows[0][0] is not None:
+            price_to_beat = float(first_snap.result_rows[0][0])
+
+        # Recent mid-yes series for the in-card sparkline. 5-min window,
+        # bucketed at 5 s → up to 60 data points. NULL-mid buckets are
+        # dropped server-side so the UI doesn't have to filter — they
+        # happen when the book is one-sided near resolution.
+        series_q = await ch.query(
+            """
+            SELECT toStartOfInterval(ts, INTERVAL 5 SECOND) AS bucket,
+                   avg(mid_yes) AS mid_yes
+              FROM orderbook_snapshots
+             WHERE market_id = {market_id:String}
+               AND ts > now() - INTERVAL 5 MINUTE
+               AND mid_yes IS NOT NULL
+             GROUP BY bucket
+             ORDER BY bucket
+            """,
+            parameters={"market_id": market_id},
+        )
+        recent_mid_yes = [
+            {"ts": r[0].isoformat(), "mid_yes": float(r[1])}
+            for r in series_q.result_rows
+        ]
+
         # Last trade prices (per side, last 60 s). Falls back to None
         # when the market has been quiet — UI then uses mid as headline.
         # Why 60 s: longer windows let a stale outlier (e.g. one-off
@@ -1017,6 +1060,8 @@ async def get_polymarket_live_board(
             "last_trade_no_price": last_trade_no_price,
             "last_trade_ts": last_trade_ts.isoformat() if last_trade_ts else None,
             "underlying_price": float(underlying) if underlying is not None else None,
+            "price_to_beat": price_to_beat,
+            "recent_mid_yes": recent_mid_yes,
             "orderbook_up": {"bids": yes_bids, "asks": yes_asks},
             "orderbook_down": {"bids": no_bids, "asks": no_asks},
         })

@@ -48,6 +48,8 @@ interface Board {
   last_trade_no_price: number | null;
   last_trade_ts: string | null;
   underlying_price: number | null;
+  price_to_beat: number | null;
+  recent_mid_yes: { ts: string; mid_yes: number }[];
   orderbook_up: { bids: OrderbookLevel[]; asks: OrderbookLevel[] };
   orderbook_down: { bids: OrderbookLevel[]; asks: OrderbookLevel[] };
 }
@@ -272,6 +274,20 @@ function BoardCard({
   mispricing: MispricingResult | null;
 }) {
   const label = EVENT_TYPE_LABEL[board.event_type] ?? board.event_type;
+  // Resolution time is fixed; tick locally every second so the countdown
+  // doesn't wait on the 5-sec poll. resolution_at comes ISO from server.
+  const resolutionMs = board.resolution_at
+    ? new Date(board.resolution_at).getTime()
+    : null;
+  const timeLeft = useCountdown(resolutionMs);
+
+  const delta =
+    board.underlying_price !== null && board.price_to_beat !== null
+      ? board.underlying_price - board.price_to_beat
+      : null;
+  const deltaTone =
+    delta === null ? "text-base-content/40" : delta > 0 ? "text-primary" : delta < 0 ? "text-error" : "text-base-content/40";
+
   return (
     <div className="rounded-xl border border-base-300 bg-base-200/30 overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-base-300 bg-base-200/40 gap-2">
@@ -283,10 +299,49 @@ function BoardCard({
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {mispricing && <MispricingBadge result={mispricing} />}
-          <span className="text-xs font-mono text-base-content/50">
-            {formatTimeToResolution(board.time_to_resolution_s)}
+          <span className="text-xs font-mono tabular-nums text-base-content/70 bg-base-300/40 px-2 py-0.5 rounded">
+            {timeLeft}
           </span>
         </div>
+      </div>
+
+      {/* Price-to-beat strip */}
+      <div className="grid grid-cols-3 px-4 py-2.5 border-b border-base-300/60 text-[11px] font-mono bg-base-200/20">
+        <div>
+          <div className="uppercase text-[9px] tracking-widest text-base-content/40 mb-0.5">
+            Price to beat
+          </div>
+          <div className="tabular-nums text-base-content/80">
+            {board.price_to_beat !== null
+              ? `$${board.price_to_beat.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="uppercase text-[9px] tracking-widest text-base-content/40 mb-0.5">
+            Current price
+          </div>
+          <div className="tabular-nums text-base-content/80">
+            {board.underlying_price !== null
+              ? `$${board.underlying_price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : "—"}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="uppercase text-[9px] tracking-widest text-base-content/40 mb-0.5">
+            Δ
+          </div>
+          <div className={`tabular-nums ${deltaTone}`}>
+            {delta === null
+              ? "—"
+              : `${delta >= 0 ? "+" : ""}$${delta.toFixed(2)}`}
+          </div>
+        </div>
+      </div>
+
+      {/* Sparkline of UP token price over last 5 min */}
+      <div className="px-2 pt-1 pb-1 bg-base-100/40">
+        <Sparkline series={board.recent_mid_yes} />
       </div>
 
       <div className="grid grid-cols-2 divide-x divide-base-300">
@@ -526,6 +581,81 @@ function RecentTradesPanel({ trades }: { trades: Trade[] }) {
       </div>
     </div>
   );
+}
+
+/* ─── Sparkline (no chart library — inline SVG) ──────────────────── */
+
+function Sparkline({
+  series,
+  width = 360,
+  height = 56,
+}: {
+  series: { ts: string; mid_yes: number }[];
+  width?: number;
+  height?: number;
+}) {
+  if (series.length < 2) {
+    return (
+      <div className="h-14 flex items-center justify-center text-[10px] font-mono text-base-content/30">
+        gathering data…
+      </div>
+    );
+  }
+  const values = series.map((p) => p.mid_yes);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 0.01;
+  const pad = 4;
+  const step = (width - pad * 2) / (series.length - 1);
+  const points = series.map((p, i) => {
+    const x = pad + i * step;
+    const y = pad + (height - pad * 2) * (1 - (p.mid_yes - min) / range);
+    return [x, y] as const;
+  });
+  const path = points
+    .map(([x, y], i) => (i === 0 ? `M${x},${y}` : `L${x},${y}`))
+    .join(" ");
+  const lastY = points[points.length - 1][1];
+  // Fill region below the line for a subtle area look.
+  const areaPath =
+    path +
+    ` L${points[points.length - 1][0]},${height - pad}` +
+    ` L${points[0][0]},${height - pad} Z`;
+  const lastValue = values[values.length - 1];
+  const firstValue = values[0];
+  const trendUp = lastValue >= firstValue;
+  const stroke = trendUp ? "oklch(70% 0.18 155)" : "oklch(70% 0.18 25)"; // primary/error
+  const fill =
+    trendUp ? "oklch(70% 0.18 155 / 0.12)" : "oklch(70% 0.18 25 / 0.12)";
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      className="w-full h-14"
+    >
+      <path d={areaPath} fill={fill} stroke="none" />
+      <path d={path} fill="none" stroke={stroke} strokeWidth="1.5" />
+      <circle
+        cx={points[points.length - 1][0]}
+        cy={lastY}
+        r={2.5}
+        fill={stroke}
+      />
+    </svg>
+  );
+}
+
+/* ─── Countdown hook (ticks every second) ────────────────────────── */
+
+function useCountdown(targetMs: number | null): string {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  if (targetMs === null) return "—";
+  const secs = Math.max(0, Math.floor((targetMs - now) / 1000));
+  return formatTimeToResolution(secs);
 }
 
 /* ─── Mispricing overlay ─────────────────────────────────────────── */
