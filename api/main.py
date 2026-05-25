@@ -17,6 +17,8 @@ Routes:
   GET  /v1/underlying                   — Binance spot / Bybit linear price history
   GET  /v1/spot/trades                  — Binance 1m OHLC + aggressive flow
   GET  /v1/spot/trades/latest           — most recent 1m bucket per ticker
+  GET  /v1/polymarket/live-board        — currently-trading market per timeframe (Live Terminal)
+  GET  /v1/polymarket/recent-trades     — recent N Polymarket trades for a ticker
   POST /v1/backtest                     — submit a backtest job (returns job_id, async)
   GET  /v1/backtest                     — list this key's recent backtest jobs
   GET  /v1/backtest/{job_id}            — poll status / fetch completed result
@@ -870,6 +872,207 @@ async def get_spot_trades_latest(
         "num_trades": int(r[6]),
         "aggressive_buy_volume": float(r[7]),
         "aggressive_sell_volume": float(r[8]),
+    }
+
+
+@app.get("/v1/polymarket/live-board")
+async def get_polymarket_live_board(
+    request: Request,
+    ticker: str = Query(..., examples=["BTC", "ETH", "SOL"]),
+    _: dict = Depends(authed_key),
+) -> dict[str, Any]:
+    """Single-shot dashboard payload for the Live Terminal page.
+
+    For each event_type (5m/15m/1h/4h/daily_up_down) returns the
+    currently-trading market for the given ticker — defined as
+    `is_active AND resolution_at > now()`, ordered by soonest
+    resolution — together with its latest orderbook snapshot.
+
+    The Next.js dashboard polls this every 5 s.  One call replaces
+    what would otherwise be ~5 separate `/v1/markets/{id}/orderbook`
+    fetches per refresh.
+    """
+    import orjson
+
+    pool = request.app.state.pg
+    ch = request.app.state.ch
+
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (e.event_type)
+               m.market_id, e.polymarket_slug, e.event_type, e.question,
+               m.outcome, e.resolution_at
+          FROM markets m JOIN events e ON e.event_id = m.event_id
+         WHERE e.ticker = $1
+           AND m.is_active = TRUE
+           AND e.resolution_at IS NOT NULL
+           AND e.resolution_at > NOW()
+         ORDER BY e.event_type, e.resolution_at ASC
+        """,
+        ticker.upper(),
+    )
+    if not rows:
+        return {"ticker": ticker.upper(), "boards": []}
+
+    boards: list[dict[str, Any]] = []
+
+    for row in rows:
+        market_id = row["market_id"]
+        snap = await ch.query(
+            """
+            SELECT ts, yes_bids, yes_asks, no_bids, no_asks,
+                   mid_yes, spread_yes, underlying_price
+              FROM orderbook_snapshots
+             WHERE market_id = {market_id:String}
+             ORDER BY ts DESC LIMIT 1
+            """,
+            parameters={"market_id": market_id},
+        )
+        if not snap.result_rows:
+            continue
+
+        ts_, yb, ya, nb, na, mid_yes, spread, underlying = snap.result_rows[0]
+
+        def _safe_json(raw: Any) -> list[dict[str, Any]]:
+            try:
+                return orjson.loads(raw)
+            except (orjson.JSONDecodeError, TypeError):
+                return []
+
+        yes_bids = _safe_json(yb)
+        yes_asks = _safe_json(ya)
+        no_bids = _safe_json(nb)
+        no_asks = _safe_json(na)
+
+        best_no_bid = no_bids[0]["price"] if no_bids else None
+        best_no_ask = no_asks[0]["price"] if no_asks else None
+        mid_no = (
+            (best_no_bid + best_no_ask) / 2
+            if best_no_bid is not None and best_no_ask is not None
+            else None
+        )
+        spread_no = (
+            best_no_ask - best_no_bid
+            if best_no_bid is not None and best_no_ask is not None
+            else None
+        )
+
+        resolution_at = row["resolution_at"]
+        time_to_resolution_s = (
+            int((resolution_at - ts_.replace(tzinfo=resolution_at.tzinfo)).total_seconds())
+            if resolution_at is not None
+            else None
+        )
+
+        boards.append({
+            "event_type": row["event_type"],
+            "market_id": market_id,
+            "slug": row["polymarket_slug"],
+            "question": row["question"],
+            "outcome": row["outcome"],
+            "resolution_at": resolution_at.isoformat() if resolution_at else None,
+            "time_to_resolution_s": time_to_resolution_s,
+            "snapshot_ts": ts_.isoformat(),
+            "mid_yes": float(mid_yes) if mid_yes is not None else None,
+            "mid_no": mid_no,
+            "spread_yes": float(spread) if spread is not None else None,
+            "spread_no": spread_no,
+            "underlying_price": float(underlying) if underlying is not None else None,
+            "orderbook_up": {"bids": yes_bids, "asks": yes_asks},
+            "orderbook_down": {"bids": no_bids, "asks": no_asks},
+        })
+
+    return {
+        "ticker": ticker.upper(),
+        "as_of": datetime.utcnow().isoformat() + "Z",
+        "boards": boards,
+    }
+
+
+@app.get("/v1/polymarket/recent-trades")
+async def get_polymarket_recent_trades(
+    request: Request,
+    ticker: str = Query(..., examples=["BTC", "ETH", "SOL"]),
+    event_type: str | None = Query(
+        default=None,
+        examples=["5m", "15m", "1h", "4h", "daily_up_down"],
+        description="Restrict to one timeframe.",
+    ),
+    limit: int = Query(default=50, le=500),
+    _: dict = Depends(authed_key),
+) -> dict[str, Any]:
+    """Most recent N Polymarket trades for a ticker, joined with market
+    metadata. Powers the Live Terminal "Recent Trades" panel.
+
+    `side` is the raw label written by the WS client:
+      BUY_YES / SELL_YES / BUY_NO / SELL_NO
+    and `outcome` is the market's `Up` or `Down` label, so the UI can
+    render "BUY UP" / "SELL DOWN" / etc. however it likes.
+
+    Window is fixed to the last hour — anything older is irrelevant
+    for a live dashboard; the historical lookup is `/v1/markets/{id}/volume`.
+    """
+    pool = request.app.state.pg
+    ch = request.app.state.ch
+
+    args: list[Any] = [ticker.upper()]
+    sql = """
+        SELECT m.market_id, e.polymarket_slug, e.event_type, m.outcome
+          FROM markets m JOIN events e ON e.event_id = m.event_id
+         WHERE e.ticker = $1 AND m.is_active = TRUE
+    """
+    if event_type:
+        sql += " AND e.event_type = $2"
+        args.append(event_type)
+    rows = await pool.fetch(sql, *args)
+    if not rows:
+        return {
+            "ticker": ticker.upper(),
+            "event_type": event_type,
+            "count": 0,
+            "trades": [],
+        }
+    market_map: dict[str, dict[str, Any]] = {r["market_id"]: dict(r) for r in rows}
+
+    result = await ch.query(
+        """
+        SELECT trade_id, market_id, ts, side, price, size
+          FROM trades
+         WHERE market_id IN {ids:Array(String)}
+           AND ts > now() - INTERVAL 1 HOUR
+         ORDER BY ts DESC
+         LIMIT {limit:UInt32}
+        """,
+        parameters={"ids": list(market_map.keys()), "limit": limit},
+    )
+
+    trades: list[dict[str, Any]] = []
+    for r in result.result_rows:
+        market_id = r[1]
+        meta = market_map.get(market_id)
+        if meta is None:
+            continue
+        price = float(r[4])
+        size = float(r[5])
+        trades.append({
+            "trade_id": r[0],
+            "market_id": market_id,
+            "slug": meta["polymarket_slug"],
+            "event_type": meta["event_type"],
+            "outcome": meta["outcome"],
+            "ts": r[2].isoformat(),
+            "side": r[3],
+            "price": price,
+            "size": size,
+            "notional_usd": price * size,
+        })
+
+    return {
+        "ticker": ticker.upper(),
+        "event_type": event_type,
+        "limit": limit,
+        "count": len(trades),
+        "trades": trades,
     }
 
 
