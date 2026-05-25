@@ -185,6 +185,11 @@ export default function Page() {
                 icon={<IconActivity />}
               />
               <FeatureCard
+                title="No-code Strategy Builder"
+                body="Compose Entry / Take Profit / Stop Loss from typed conditions — Token price, Spread, Time to resolution. Same engine, same fees, no Python required."
+                icon={<IconBlocks />}
+              />
+              <FeatureCard
                 title="120-day retention"
                 body="Twice the lookback window PolyBackTest offers. Long enough to backtest across regime shifts, not just last month's tape."
                 icon={<IconClock />}
@@ -340,6 +345,16 @@ function IconActivity() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+    </svg>
+  );
+}
+function IconBlocks() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="8" height="8" rx="1.5" />
+      <rect x="13" y="3" width="8" height="8" rx="1.5" />
+      <rect x="3" y="13" width="8" height="8" rx="1.5" />
+      <path d="M17 13v8M13 17h8" />
     </svg>
   );
 }

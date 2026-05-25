@@ -86,6 +86,14 @@ def _settle_trade_pnl(trade: Trade, yes_resolved_price: float) -> Trade:
     )
 
 
+def _close_side(side: Side) -> Side:
+    """Map an open-position side to the side that closes it."""
+    if side == Side.BUY_YES:  return Side.SELL_YES
+    if side == Side.SELL_YES: return Side.BUY_YES
+    if side == Side.BUY_NO:   return Side.SELL_NO
+    return Side.BUY_NO
+
+
 def _replay_single_market(
     snapshots: list[OrderBookSnapshot],
     strategy,
@@ -94,19 +102,40 @@ def _replay_single_market(
 ) -> tuple[list[Trade], float, float]:
     """Replay one market. Returns (trades, pnl, fees).
 
-    The returned trades carry per-trade `pnl` populated at settlement —
-    the BacktestResult on the frontend uses this to plot a real
-    cumulative-PnL curve (not just notional exposure).
+    PnL accounting (with TP/SL support added in Phase M):
+
+    - Entry trades carry `pnl = 0` while open. Their *round-trip* PnL is
+      attributed to the corresponding close trade, so the frontend's
+      cumulative-PnL curve correctly shows the change at the moment the
+      position is closed (not when it was opened).
+    - Close trades from TP/SL exits carry `pnl = (close_proceeds - entry_size)`.
+    - For positions still open at the end of replay, `_settle_trade_pnl`
+      retroactively stamps the entry trade with the settlement payoff —
+      preserving the v0 behavior for legacy strategies.
+    - Per-market `pnl` is the sum of every trade's PnL after that pass.
+
+    Position exits: if the strategy exposes `on_in_position(...)` (the
+    Strategy Builder's condition_based strategy does), we call it each
+    snapshot while a position is open. It returns "exit" to close at the
+    current opposite-side bid. Function strategies (threshold_entry etc.)
+    have no such hook and continue to hold to settlement.
+
+    Re-entry: after an exit, up to `max_trades_per_market` total entries
+    are allowed (default 1; the Strategy Builder UI exposes this).
     """
     if not snapshots:
         return [], 0.0, 0.0
 
     history: deque[OrderBookSnapshot] = deque(maxlen=HISTORY_WINDOW)
     trades: list[Trade] = []
-    open_position: tuple[Side, float, float] | None = None  # (side, avg_price, filled_usd)
+    open_position: tuple[Side, float, float, int] | None = None
+    # (side, entry_price, entry_usd, entry_trade_idx)
     fees_total = 0.0
+    n_fills = 0
 
-    # Try calling strategy with resolution_at if it accepts the kwarg
+    on_in_position = getattr(strategy, "on_in_position", None)
+    max_trades_per_market = int(getattr(strategy, "max_trades_per_market", 1))
+
     import inspect
     sig = inspect.signature(strategy.func) if hasattr(strategy, "func") else None
     pass_resolution = (
@@ -115,15 +144,57 @@ def _replay_single_market(
 
     for snap in snapshots:
         history.append(snap)
+
+        # ── In a position: check for TP/SL exit ──────────────────────────
         if open_position is not None:
-            # Once we've taken a position in v0, hold to settlement.
-            # Future versions can support stop-loss / take-profit.
+            if on_in_position is None:
+                continue
+            try:
+                exit_signal = on_in_position(
+                    list(history)[:-1], snap, open_position[:3],
+                    resolution_at=resolution_at,
+                )
+            except TypeError:
+                exit_signal = on_in_position(list(history)[:-1], snap, open_position[:3])
+            if exit_signal != "exit":
+                continue
+
+            entry_side, entry_price, entry_usd, entry_idx = open_position
+            close_side = _close_side(entry_side)
+            shares = entry_usd / entry_price if entry_price > 0 else 0.0
+            close_fill = walk_book(snap, close_side, shares)
+            if close_fill is None:
+                # Thin book — defer to next snapshot.
+                continue
+            close_price, close_filled, close_slip = close_fill
+            close_fee = platform_fee(_platform_of(snap.market_id), close_filled, close_price)
+            fees_total += close_fee
+            round_trip_pnl = close_filled - entry_usd
+            trades.append(
+                Trade(
+                    ts=snap.ts,
+                    market_id=snap.market_id,
+                    side=close_side,
+                    price=close_price,
+                    size=close_filled,
+                    slippage_bps=close_slip,
+                    fees=close_fee,
+                    pnl=round_trip_pnl,
+                    underlying_price=snap.underlying_price,
+                )
+            )
+            # Mark the entry trade closed so _settle_trade_pnl skips it.
+            from dataclasses import replace
+            trades[entry_idx] = replace(trades[entry_idx], pnl=0.0)
+            open_position = None
+            continue
+
+        # ── No position: try to enter ────────────────────────────────────
+        if n_fills >= max_trades_per_market:
             continue
 
         try:
             if pass_resolution:
-                # The strategy may have resolution_at baked in by build_strategy;
-                # if not, inject it here.
                 action = strategy(list(history)[:-1], snap, resolution_at=resolution_at)
             else:
                 action = strategy(list(history)[:-1], snap)
@@ -138,11 +209,7 @@ def _replay_single_market(
         if fill is None:
             continue
         avg_price, filled_usd, slippage_bps = fill
-        platform = _platform_of(snap.market_id)
-        # Price-dependent fee: see backtest/slippage.py for the formula.
-        # Pass avg_price so a fill near the extremes (cheap) pays less
-        # than a fill near 50¢ (where the fee is highest).
-        fee = platform_fee(platform, filled_usd, avg_price)
+        fee = platform_fee(_platform_of(snap.market_id), filled_usd, avg_price)
         fees_total += fee
         trades.append(
             Trade(
@@ -153,23 +220,22 @@ def _replay_single_market(
                 size=filled_usd,
                 slippage_bps=slippage_bps,
                 fees=fee,
-                # Snapshot underlying price at the moment of fill. Lets the
-                # dashboard show "BTC was at $67,500 when this trade fired"
-                # alongside the Polymarket fill price.
                 underlying_price=snap.underlying_price,
             )
         )
-        open_position = (side, avg_price, filled_usd)
+        open_position = (side, avg_price, filled_usd, len(trades) - 1)
+        n_fills += 1
 
-    # Settle: rewrite each trade with its realised PnL now that we know the
-    # outcome. We keep the original ordering so the frontend can render a
-    # proper cumulative-PnL chart over time.
-    settled_trades = [_settle_trade_pnl(t, yes_resolved_price) for t in trades]
+    # Trades closed via TP/SL already have pnl set; settle the rest.
+    settled_trades = [
+        t if t.pnl is not None else _settle_trade_pnl(t, yes_resolved_price)
+        for t in trades
+    ]
 
-    pnl = 0.0
-    if open_position is not None:
-        side, avg_price, filled_usd = open_position
-        pnl = settlement_payoff(side, avg_price, filled_usd, yes_resolved_price)
+    # Per-market PnL = sum of every trade's realised PnL. Entry trades for
+    # TP/SL-closed positions carry pnl=0 (the round-trip is on the close
+    # trade), so this sum is non-double-counted by construction.
+    pnl = sum(t.pnl or 0.0 for t in settled_trades)
     return settled_trades, pnl, fees_total
 
 

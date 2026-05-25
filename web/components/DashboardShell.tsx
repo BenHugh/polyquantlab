@@ -50,6 +50,11 @@ const NAV: NavItem[] = [
     icon: <IconActivity />,
   },
   {
+    href: "/dashboard/strategy-builder",
+    label: "Strategy Builder",
+    icon: <IconBlocks />,
+  },
+  {
     href: "/dashboard/backtest",
     label: "Backtest",
     icon: <IconCharts />,
@@ -265,6 +270,16 @@ function IconPlay() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <polygon points="6,4 20,12 6,20" fill="currentColor" />
+    </svg>
+  );
+}
+function IconBlocks() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="8" height="8" rx="1.5" />
+      <rect x="13" y="3" width="8" height="8" rx="1.5" />
+      <rect x="3" y="13" width="8" height="8" rx="1.5" />
+      <path d="M17 13v8M13 17h8" />
     </svg>
   );
 }
