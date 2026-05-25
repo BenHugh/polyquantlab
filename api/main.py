@@ -961,7 +961,7 @@ async def get_polymarket_live_board(
         series_q = await ch.query(
             """
             SELECT toStartOfInterval(ts, INTERVAL 5 SECOND) AS bucket,
-                   avg(mid_yes) AS mid_yes
+                   avg(mid_yes) AS avg_mid
               FROM orderbook_snapshots
              WHERE market_id = {market_id:String}
                AND ts > now() - INTERVAL 5 MINUTE
