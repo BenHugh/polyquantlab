@@ -1,6 +1,7 @@
 import AnimatedCounter from "@/components/AnimatedCounter";
 import ButtonSignin from "@/components/ButtonSignin";
 import Pricing from "@/components/Pricing";
+import ThemeToggle from "@/components/ThemeToggle";
 import config from "@/config";
 import Link from "next/link";
 
@@ -55,6 +56,7 @@ export default function Page() {
             >
               GitHub
             </a>
+            <ThemeToggle />
             <ButtonSignin text="Sign in" />
           </nav>
         </div>

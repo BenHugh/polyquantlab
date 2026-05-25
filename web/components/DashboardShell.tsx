@@ -19,6 +19,7 @@
  */
 
 import ButtonAccount from "@/components/ButtonAccount";
+import ThemeToggle from "@/components/ThemeToggle";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
@@ -109,7 +110,10 @@ export default function DashboardShell({
           <Link href="/dashboard" className="font-semibold tracking-tight">
             PolyQuantLab
           </Link>
-          <ButtonAccount />
+          <div className="flex items-center gap-1">
+            <ThemeToggle compact />
+            <ButtonAccount />
+          </div>
         </header>
 
         <main className="flex-1 px-4 sm:px-8 py-6 sm:py-10">{children}</main>
@@ -188,8 +192,9 @@ export default function DashboardShell({
                 {userEmail}
               </div>
             )}
-            <div className="px-1">
+            <div className="flex items-center justify-between px-1">
               <ButtonAccount />
+              <ThemeToggle compact />
             </div>
           </div>
         </aside>
