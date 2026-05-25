@@ -123,6 +123,10 @@ export default function StrategyBuilder() {
   // swap in the stored state after mount.
   const [state, setState] = useState<BuilderState>(DEFAULT_STATE);
   const [submitting, setSubmitting] = useState(false);
+  // Advanced section (since/until) hidden by default — PolyBackTest
+  // doesn't expose them either, and the universe loader's "last N
+  // markets" default is what most users want.
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     const stored = loadStored();
@@ -298,6 +302,7 @@ export default function StrategyBuilder() {
               onChange={(e) =>
                 update("marketLimit", parseInt(e.target.value, 10))
               }
+              title="More markets = wider time window = better regime mix. 50 markets of 5m = ~4 hours; 200 = ~16 hours."
             />
           </Field>
           <Field label="Position size ($)">
@@ -351,22 +356,45 @@ export default function StrategyBuilder() {
               title="Refuse entries when the best ask exceeds this. 1.00 = no limit."
             />
           </Field>
-          <Field label="Since (optional)">
-            <input
-              type="datetime-local"
-              className="input input-sm input-bordered w-full"
-              value={state.since}
-              onChange={(e) => update("since", e.target.value)}
-            />
-          </Field>
-          <Field label="Until (optional)">
-            <input
-              type="datetime-local"
-              className="input input-sm input-bordered w-full"
-              value={state.until}
-              onChange={(e) => update("until", e.target.value)}
-            />
-          </Field>
+        </div>
+
+        <div className="mt-2 pt-3 border-t border-base-300/50">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="text-xs text-base-content/50 hover:text-base-content transition-colors flex items-center gap-1.5"
+          >
+            <span className="inline-block transition-transform" style={{ transform: showAdvanced ? "rotate(90deg)" : "rotate(0deg)" }}>
+              ▸
+            </span>
+            Advanced — time window
+          </button>
+          {showAdvanced && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+              <Field label="Since (optional)">
+                <input
+                  type="datetime-local"
+                  className="input input-sm input-bordered w-full"
+                  value={state.since}
+                  onChange={(e) => update("since", e.target.value)}
+                />
+              </Field>
+              <Field label="Until (optional)">
+                <input
+                  type="datetime-local"
+                  className="input input-sm input-bordered w-full"
+                  value={state.until}
+                  onChange={(e) => update("until", e.target.value)}
+                />
+              </Field>
+              <p className="md:col-span-2 text-[11px] text-base-content/40 leading-relaxed">
+                Restrict the market universe to a specific window. Leave blank
+                to use the {state.marketLimit} most-recently-resolved markets
+                (PolyBackTest&apos;s default). Useful for train/test splits or
+                isolating a regime — e.g. test on January, validate on February.
+              </p>
+            </div>
+          )}
         </div>
       </Section>
 
