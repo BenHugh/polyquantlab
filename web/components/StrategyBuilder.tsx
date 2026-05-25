@@ -185,7 +185,7 @@ export default function StrategyBuilder() {
   const readsAs = useMemo(() => {
     const entryEn =
       state.entry.length === 0
-        ? "(no entry rules)"
+        ? "no rules — enter as soon as a fill is possible"
         : state.entry.map(humanise).join(" AND ");
     const tpEn =
       state.takeProfit.length === 0
@@ -202,10 +202,9 @@ export default function StrategyBuilder() {
   // -- Submit ------------------------------------------------------------
 
   async function submit() {
-    if (state.entry.length === 0) {
-      toast.error("Add at least one entry condition before running.");
-      return;
-    }
+    // Empty entry is allowed — backend treats it as "enter at first
+    // acceptable fill" (still gated by max_fill_price), matching
+    // PolyBackTest's buy-and-hold default.
     setSubmitting(true);
 
     const strategy = {

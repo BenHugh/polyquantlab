@@ -158,9 +158,13 @@ class ConditionBasedStrategy:
         *,
         resolution_at: Any = None,
     ) -> Action:
-        if not self.entry:
-            return None
-        if not evaluate_section(self.entry, current, resolution_at=resolution_at):
+        # Empty entry → "buy at first opportunity" — matches PolyBackTest's
+        # default when the user wants a buy-and-hold baseline. The engine's
+        # max_trades_per_market + max_fill_price still gate downstream so
+        # we don't end up firing 8 times/sec.
+        if self.entry and not evaluate_section(
+            self.entry, current, resolution_at=resolution_at,
+        ):
             return None
         side = Side.BUY_YES if self.trade_logic == "always_up" else Side.BUY_NO
         return side, self.size_usd
