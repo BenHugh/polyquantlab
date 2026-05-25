@@ -25,6 +25,7 @@ type Op = ">=" | ">" | "<=" | "<" | "==";
 type ConditionType = "token_price" | "spread" | "time_to_resolution_s";
 type TokenSide = "yes" | "no";
 type TradeLogic = "always_up" | "always_down";
+type FillMode = "walk_book" | "mid";
 
 interface Condition {
   id: string;
@@ -41,6 +42,8 @@ interface BuilderState {
   marketLimit: number;
   sizeUsd: number;
   maxTradesPerMarket: number;
+  fillMode: FillMode;
+  maxFillPrice: number;
   since: string;
   until: string;
   // Conditions
@@ -79,6 +82,11 @@ const DEFAULT_STATE: BuilderState = {
   marketLimit: 50,
   sizeUsd: 10,
   maxTradesPerMarket: 1,
+  fillMode: "walk_book",
+  // 0.85 default: refuses fills above 85¢. Catches the wide-book trap
+  // where mid=0.60 but best ask is 0.90 (extremely common for short-
+  // dated markets near resolution). Users can disable by setting 1.0.
+  maxFillPrice: 0.85,
   since: "",
   until: "",
   tradeLogic: "always_up",
@@ -197,6 +205,8 @@ export default function StrategyBuilder() {
       trade_logic: state.tradeLogic,
       size_usd: state.sizeUsd,
       max_trades_per_market: state.maxTradesPerMarket,
+      fill_mode: state.fillMode,
+      max_fill_price: state.maxFillPrice,
     };
     const payload = {
       strategy,
@@ -301,6 +311,33 @@ export default function StrategyBuilder() {
               }
             />
           </Field>
+          <Field
+            label="Fill mode"
+          >
+            <select
+              className="select select-sm select-bordered w-full"
+              value={state.fillMode}
+              onChange={(e) => update("fillMode", e.target.value as FillMode)}
+              title="Walk-book = realistic (hit best ask). Mid = optimistic, matches PolyBackTest."
+            >
+              <option value="walk_book">Walk book (realistic)</option>
+              <option value="mid">Mid fill (optimistic)</option>
+            </select>
+          </Field>
+          <Field label={`Max fill price · ${state.maxFillPrice.toFixed(2)}`}>
+            <input
+              type="range"
+              min={0.50}
+              max={1.00}
+              step={0.01}
+              className="range range-xs range-primary"
+              value={state.maxFillPrice}
+              onChange={(e) =>
+                update("maxFillPrice", parseFloat(e.target.value))
+              }
+              title="Refuse entries when the best ask exceeds this. 1.00 = no limit."
+            />
+          </Field>
           <Field label="Since (optional)">
             <input
               type="datetime-local"
@@ -388,6 +425,14 @@ export default function StrategyBuilder() {
         <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
           Heads up — Take Profit and Stop Loss are both empty. Trades will
           only exit on resolution.
+        </div>
+      )}
+
+      {state.fillMode === "mid" && (
+        <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
+          Mid-fill mode is <strong>optimistic</strong> — you can&apos;t actually
+          fill at mid when the book is wide. Use it to compare against
+          PolyBackTest&apos;s curve, but trust walk-book results for sizing.
         </div>
       )}
 

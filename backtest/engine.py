@@ -99,11 +99,39 @@ def _close_side(side: Side) -> Side:
     return Side.BUY_NO
 
 
+def _mid_for_side(snap: OrderBookSnapshot, side: Side) -> float | None:
+    """Mid price of the BID side for the side we want to BUY (or SELL).
+
+    For BUY_YES / SELL_YES this is the YES mid; for BUY_NO / SELL_NO
+    this is the NO mid. Used by fill_mode="mid" entries + exits.
+    """
+    if side in (Side.BUY_YES, Side.SELL_YES):
+        if snap.yes_bids and snap.yes_asks:
+            return (snap.yes_bids[0].price + snap.yes_asks[0].price) / 2
+    else:
+        if snap.no_bids and snap.no_asks:
+            return (snap.no_bids[0].price + snap.no_asks[0].price) / 2
+    return None
+
+
+def _best_ask_for_side(snap: OrderBookSnapshot, side: Side) -> float | None:
+    """Top of the ask book on the side we want to BUY. Used by
+    max_fill_price guard."""
+    if side == Side.BUY_YES and snap.yes_asks:
+        return snap.yes_asks[0].price
+    if side == Side.BUY_NO and snap.no_asks:
+        return snap.no_asks[0].price
+    return None
+
+
 def _replay_single_market(
     snapshots: list[OrderBookSnapshot],
     strategy,
     resolution_at: datetime | None,
     yes_resolved_price: float,
+    *,
+    fill_mode: str = "walk_book",
+    max_fill_price: float = 1.0,
 ) -> tuple[list[Trade], float, float]:
     """Replay one market. Returns (trades, pnl, fees).
 
@@ -167,13 +195,21 @@ def _replay_single_market(
             entry_side, entry_price, entry_usd, entry_idx = open_position
             close_side = _close_side(entry_side)
             shares = entry_usd / entry_price if entry_price > 0 else 0.0
-            # Exits need a share→USD walk (we have N shares, want to hit
-            # the bids until they're gone), not walk_book's USD→USD path.
-            close_fill = walk_book_to_sell_shares(snap, close_side, shares)
-            if close_fill is None:
-                # Thin book — defer to next snapshot.
-                continue
-            close_price, close_usd_received, close_slip = close_fill
+            if fill_mode == "mid":
+                # Mid-fill close: pretend the whole share count clears at mid.
+                # Unrealistic but matches PolyBackTest's optimistic accounting
+                # so users can compare like-for-like.
+                close_mid = _mid_for_side(snap, close_side)
+                if close_mid is None:
+                    continue
+                close_price = close_mid
+                close_usd_received = shares * close_mid
+                close_slip = 0.0
+            else:
+                close_fill = walk_book_to_sell_shares(snap, close_side, shares)
+                if close_fill is None:
+                    continue
+                close_price, close_usd_received, close_slip = close_fill
             close_fee = platform_fee(_platform_of(snap.market_id), close_usd_received, close_price)
             fees_total += close_fee
             round_trip_pnl = close_usd_received - entry_usd
@@ -212,10 +248,31 @@ def _replay_single_market(
             continue
 
         side, size_usd = action
-        fill = walk_book(snap, side, size_usd)
-        if fill is None:
+
+        # max_fill_price guard: skip the entry if the best ask we'd hit
+        # is above the user's ceiling. This is the cleanest defense
+        # against "mid said 0.60 but the book is wide so I'd actually
+        # pay 0.90" — see Phase O notes on PolyBackTest comparison.
+        best_ask = _best_ask_for_side(snap, side)
+        if (
+            side in (Side.BUY_YES, Side.BUY_NO)
+            and best_ask is not None
+            and best_ask > max_fill_price
+        ):
             continue
-        avg_price, filled_usd, slippage_bps = fill
+
+        if fill_mode == "mid":
+            mid_at_fill = _mid_for_side(snap, side)
+            if mid_at_fill is None:
+                continue
+            avg_price = mid_at_fill
+            filled_usd = size_usd
+            slippage_bps = 0.0
+        else:
+            fill = walk_book(snap, side, size_usd)
+            if fill is None:
+                continue
+            avg_price, filled_usd, slippage_bps = fill
         fee = platform_fee(_platform_of(snap.market_id), filled_usd, avg_price)
         fees_total += fee
         trades.append(
@@ -292,6 +349,8 @@ async def _process_one_market(
     pg_pool: asyncpg.Pool,
     since: datetime | None,
     sem: asyncio.Semaphore,
+    fill_mode: str = "walk_book",
+    max_fill_price: float = 1.0,
 ) -> tuple[list[Trade], float, float] | None:
     """Load + replay one market under the global concurrency cap.
 
@@ -325,6 +384,8 @@ async def _process_one_market(
                 strategy,
                 market["resolution_at"],
                 resolution.outcome_yes_price,
+                fill_mode=fill_mode,
+                max_fill_price=max_fill_price,
             )
             return (trades, pnl, fees) if trades else None
         except Exception:  # noqa: BLE001
@@ -349,7 +410,25 @@ async def run_backtest(
     `_BACKTEST_CONCURRENCY`). After all complete we sort trades into
     chronological order so the frontend equity curve renders correctly.
     """
-    strategy = build_strategy(strategy_spec)
+    # Pull fill-mode + max-fill-price off the spec before handing it to
+    # build_strategy — they're execution params, not strategy params.
+    # Defaults: walk_book (realistic) + 1.0 (no ceiling). Mid-fill is
+    # documented in the UI as "optimistic / matches PolyBackTest".
+    spec_for_strategy = {
+        k: v
+        for k, v in strategy_spec.items()
+        if k not in ("fill_mode", "max_fill_price")
+    }
+    fill_mode = str(strategy_spec.get("fill_mode") or "walk_book").lower()
+    if fill_mode not in ("walk_book", "mid"):
+        fill_mode = "walk_book"
+    try:
+        max_fill_price = float(strategy_spec.get("max_fill_price", 1.0))
+    except (TypeError, ValueError):
+        max_fill_price = 1.0
+    max_fill_price = max(0.0, min(1.0, max_fill_price))
+
+    strategy = build_strategy(spec_for_strategy)
     universe = await list_resolved_markets(
         pg_pool,
         event_type=event_type,
@@ -372,6 +451,8 @@ async def run_backtest(
                 pg_pool=pg_pool,
                 since=since,
                 sem=sem,
+                fill_mode=fill_mode,
+                max_fill_price=max_fill_price,
             )
             for m in universe
         ]
