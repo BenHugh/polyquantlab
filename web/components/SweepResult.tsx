@@ -1,7 +1,9 @@
 "use client";
 
 import ExportButtons from "@/components/ExportButtons";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import toast from "react-hot-toast";
 
 /**
  * Sweep result viewer.
@@ -150,6 +152,8 @@ function SweepBody({
   metric: typeof METRICS[number]["key"];
   setMetric: (m: typeof METRICS[number]["key"]) => void;
 }) {
+  const router = useRouter();
+  const [running, setRunning] = useState(false);
   const metricSpec = METRICS.find((m) => m.key === metric)!;
   const { x_axis, y_axis, cells, best } = result;
 
@@ -168,6 +172,51 @@ function SweepBody({
   const lo = flat.length ? Math.min(...flat) : 0;
   const hi = flat.length ? Math.max(...flat) : 0;
   const absMax = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+
+  // Plateau detection. A cell is "on the plateau" when its metric is
+  // within 10% of the peak AND at least 2 of its 4-neighbours also
+  // qualify. Single-cell spikes don't pass the neighbour test, which
+  // is exactly what we want — out-of-sample those usually evaporate.
+  const plateau = useMemo(() => {
+    const grid = cells;
+    if (grid.length === 0) return new Set<string>();
+    const peak = (() => {
+      let best = -Infinity;
+      let dir = metricSpec.higherIsBetter ? 1 : -1;
+      for (const row of grid)
+        for (const c of row) {
+          const v = (c as any)[metric];
+          if (typeof v === "number" && Number.isFinite(v)) {
+            const score = v * dir;
+            if (score > best) best = score;
+          }
+        }
+      return best;
+    })();
+    if (!Number.isFinite(peak)) return new Set<string>();
+    const dir = metricSpec.higherIsBetter ? 1 : -1;
+    const threshold = peak * 0.9; // within 10% of peak (in dir-adjusted space)
+    function passes(y: number, x: number): boolean {
+      const c = grid[y]?.[x];
+      if (!c || c.error) return false;
+      const v = (c as any)[metric];
+      if (typeof v !== "number" || !Number.isFinite(v)) return false;
+      return v * dir >= threshold;
+    }
+    const set = new Set<string>();
+    for (let y = 0; y < grid.length; y++) {
+      for (let x = 0; x < grid[y].length; x++) {
+        if (!passes(y, x)) continue;
+        const neighbourHits =
+          (passes(y - 1, x) ? 1 : 0) +
+          (passes(y + 1, x) ? 1 : 0) +
+          (passes(y, x - 1) ? 1 : 0) +
+          (passes(y, x + 1) ? 1 : 0);
+        if (neighbourHits >= 2) set.add(`${y},${x}`);
+      }
+    }
+    return set;
+  }, [cells, metric, metricSpec]);
   // For "higher is better" we want a diverging scale centred at 0.
   // For "lower is better" (drawdown) we flip the perception.
   function colorFor(v: number | null): string {
@@ -247,14 +296,22 @@ function SweepBody({
                 {row.map((cell, xi) => {
                   const v = (cell as any)[metric] as number | null;
                   const isBest = best.x_idx === xi && best.y_idx === yi;
+                  const isPlateau = plateau.has(`${yi},${xi}`);
                   const isError = !!cell.error;
+                  // Outline priority: best (solid) → plateau (dashed inner ring).
+                  const outline = isBest
+                    ? "2px solid currentColor"
+                    : isPlateau
+                      ? "1.5px dashed oklch(70% 0.18 155 / 0.7)"
+                      : "none";
                   return (
                     <td
                       key={xi}
                       title={cellTooltip(cell, x_axis.values[xi], y_axis ? y_axis.values[yi] : null, x_axis.param, y_axis?.param)}
                       style={{
                         background: isError ? "var(--fallback-b3,#e5e7eb)" : colorFor(v),
-                        outline: isBest ? "2px solid currentColor" : "none",
+                        outline,
+                        outlineOffset: isPlateau && !isBest ? "-2px" : undefined,
                       }}
                       className="font-mono text-xs text-center min-w-[60px] cursor-help"
                     >
@@ -272,7 +329,61 @@ function SweepBody({
 
       {/* Best cell summary */}
       <div className="rounded-lg border border-base-300 bg-base-100 p-4">
-        <h3 className="font-semibold mb-2">Best cell (by net P&L)</h3>
+        <div className="flex items-baseline justify-between flex-wrap gap-2 mb-2">
+          <h3 className="font-semibold">Best cell (by net P&L)</h3>
+          <button
+            onClick={async () => {
+              if (running) return;
+              setRunning(true);
+              try {
+                const baseStrategy =
+                  (params.strategy as Record<string, unknown>) || {};
+                const merged = {
+                  ...baseStrategy,
+                  [x_axis.param]: x_axis.values[best.x_idx],
+                };
+                if (y_axis) {
+                  (merged as Record<string, unknown>)[y_axis.param] =
+                    y_axis.values[best.y_idx];
+                }
+                const body = {
+                  strategy: merged,
+                  ticker: params.ticker,
+                  event_type: params.event_type,
+                  market_limit: params.market_limit,
+                  since: params.since,
+                  until: params.until,
+                };
+                const r = await fetch("/api/backtest", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(body),
+                });
+                const data = await r.json();
+                if (!r.ok) {
+                  toast.error(data?.error || `Submit failed (${r.status})`);
+                  return;
+                }
+                const id = data.job_id || data.id;
+                if (!id) {
+                  toast.error("No job_id returned");
+                  return;
+                }
+                toast.success("Running with best params…");
+                router.push(`/dashboard/backtest/${id}`);
+              } catch (e: any) {
+                toast.error(e?.message || "Network error");
+              } finally {
+                setRunning(false);
+              }
+            }}
+            disabled={running}
+            className="btn btn-sm btn-primary rounded-lg"
+            title="Submit a new single-backtest job using the swept-best parameter values."
+          >
+            {running ? "Submitting…" : "Run best params →"}
+          </button>
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <Stat label={x_axis.param} value={formatNum(x_axis.values[best.x_idx])} />
           {y_axis && (
@@ -294,9 +405,10 @@ function SweepBody({
           <Stat label="Trades" value={cells[best.y_idx][best.x_idx].n_trades.toString()} />
         </div>
         <p className="text-xs opacity-60 mt-3">
-          Tip: Look for a smooth high-PnL <em>plateau</em> rather than an
-          isolated spike. Spikes often vanish on out-of-sample data — a
-          stable region of similar values is a much stronger signal.
+          Tip: Cells outlined with a <span className="font-mono">dashed
+          green</span> border are within 10% of the peak <em>and</em>
+          have ≥2 similar neighbours — the strategy plateau. Spike-only
+          cells (no dashed outline) usually don&apos;t survive out-of-sample.
         </p>
       </div>
 

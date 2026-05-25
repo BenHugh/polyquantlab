@@ -1,7 +1,9 @@
 "use client";
 
 import ExportButtons from "@/components/ExportButtons";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import toast from "react-hot-toast";
 
 /**
  * Calibration scatter/bar plot — see the page for the marketing pitch.
@@ -170,6 +172,11 @@ export default function CalibrationView() {
             <>
               <SummaryBar data={data} />
               <CalibrationChart buckets={data.buckets} loading={loading} />
+              <InsightCard
+                buckets={data.buckets}
+                ticker={ticker}
+                eventType={eventType}
+              />
               <BucketTable buckets={data.buckets} />
             </>
           );
@@ -475,6 +482,126 @@ function CalibrationChart({
         Bubble size = sample count. Red bubbles = market underestimated Up
         (longer-than-implied actual occurrence). Green = market overestimated
         Up. Bubbles on the diagonal are well-calibrated.
+      </p>
+    </div>
+  );
+}
+
+function InsightCard({
+  buckets,
+  ticker,
+  eventType,
+}: {
+  buckets: Bucket[];
+  ticker: string;
+  eventType: string;
+}) {
+  const router = useRouter();
+
+  // Find the bucket with the largest mispricing (|up_rate - mean_mid|).
+  // Require n_markets ≥ 20 so we're surfacing an edge, not small-sample noise.
+  const MIN_N = 20;
+  const candidates = buckets.filter(
+    (b) =>
+      b.n_markets >= MIN_N && b.up_rate != null && b.mean_mid != null,
+  );
+  if (candidates.length === 0) {
+    return null;
+  }
+  const winner = candidates.reduce((best, b) =>
+    Math.abs((b.up_rate ?? 0) - (b.mean_mid ?? 0)) >
+    Math.abs((best.up_rate ?? 0) - (best.mean_mid ?? 0))
+      ? b
+      : best,
+  );
+  const delta = (winner.up_rate ?? 0) - (winner.mean_mid ?? 0);
+  const edgePp = Math.abs(delta) * 100;
+  if (edgePp < 2) {
+    return null; // nothing notable
+  }
+
+  const direction = delta > 0 ? "UP under-priced" : "UP over-priced";
+  const tradeLogic = delta > 0 ? "always_up" : "always_down";
+  const description =
+    delta > 0
+      ? `markets in the ${(winner.lo * 100).toFixed(0)}–${(winner.hi * 100).toFixed(0)}% implied range actually go Up ${(((winner.up_rate ?? 0)) * 100).toFixed(1)}% of the time across ${winner.n_markets} resolved markets — buying UP in this band would capture the gap.`
+      : `markets in the ${(winner.lo * 100).toFixed(0)}–${(winner.hi * 100).toFixed(0)}% implied range only go Up ${(((winner.up_rate ?? 0)) * 100).toFixed(1)}% of the time across ${winner.n_markets} markets — buying DOWN when UP is in this band would capture the gap.`;
+
+  function applyToBuilder() {
+    // Hand off via localStorage. Strategy Builder picks up `pql-strategy-builder-prefill`
+    // on mount, applies it, and clears the key — so it's a one-shot push
+    // that doesn't trample any saved state if the user navigates back later.
+    const prefill = {
+      ticker: ticker !== "ALL" ? ticker : "BTC",
+      eventType:
+        eventType !== "ALL" ? eventType : "5m",
+      tradeLogic,
+      entry: [
+        {
+          id: Math.random().toString(36).slice(2),
+          type: "token_price",
+          side: "yes",
+          op: ">=",
+          value: Number(winner.lo.toFixed(2)),
+        },
+        {
+          id: Math.random().toString(36).slice(2),
+          type: "token_price",
+          side: "yes",
+          op: "<=",
+          value: Number(winner.hi.toFixed(2)),
+        },
+      ],
+      takeProfit: [] as unknown[],
+      stopLoss: [] as unknown[],
+      // Banner text the builder can show explaining where this came from.
+      origin: `Calibration edge · ${ticker !== "ALL" ? ticker : "BTC"} ${eventType !== "ALL" ? eventType : "5m"} · ${direction} by ${edgePp.toFixed(1)}pp`,
+    };
+    try {
+      localStorage.setItem("pql-strategy-builder-prefill", JSON.stringify(prefill));
+    } catch {
+      // localStorage full / disabled — proceed without prefill; the builder
+      // just won't pre-populate.
+    }
+    toast.success("Applied — opening Strategy Builder…");
+    router.push("/dashboard/strategy-builder");
+  }
+
+  const accent =
+    delta > 0
+      ? "border-primary/30 bg-primary/5"
+      : "border-error/30 bg-error/5";
+  const accentText = delta > 0 ? "text-primary" : "text-error";
+
+  return (
+    <div className={`rounded-xl border ${accent} p-5 space-y-3`}>
+      <div className="flex items-baseline justify-between flex-wrap gap-2">
+        <div>
+          <div className="text-[10px] font-mono uppercase tracking-widest opacity-60 mb-1">
+            Insight
+          </div>
+          <div className={`text-lg font-semibold ${accentText}`}>
+            {direction} by {edgePp.toFixed(1)}pp in the{" "}
+            {(winner.lo * 100).toFixed(0)}–{(winner.hi * 100).toFixed(0)}%
+            band
+          </div>
+        </div>
+        <button
+          onClick={applyToBuilder}
+          className="btn btn-sm btn-primary rounded-lg"
+        >
+          Apply to Strategy Builder →
+        </button>
+      </div>
+      <p className="text-sm text-base-content/70 leading-relaxed">
+        {ticker !== "ALL" ? `${ticker} ` : ""}
+        {eventType !== "ALL" ? `${eventType} ` : ""}
+        {description}
+      </p>
+      <p className="text-[11px] opacity-50 leading-relaxed font-mono">
+        Caveat: edge is computed from historical resolved markets within
+        your selected filter. Past mispricing doesn&apos;t guarantee future
+        mispricing — always validate with Paper Trading before going live.
       </p>
     </div>
   );

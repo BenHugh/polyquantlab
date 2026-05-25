@@ -392,9 +392,42 @@ export default function StrategyBuilder() {
   // (read-only presets) and My Strategies (user-saved).
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Origin banner shown when a strategy was pushed in from Calibration
+  // or Sweep ("Applied — Calibration edge · BTC 5m · UP under-priced…").
+  // Cleared as soon as the user edits anything substantial.
+  const [origin, setOrigin] = useState<string | null>(null);
+
   useEffect(() => {
-    const stored = loadStored();
-    if (stored) setState(stored);
+    // One-shot prefill from Calibration / Sweep hand-off — takes
+    // precedence over the user's saved state for this mount only.
+    let prefilled = false;
+    try {
+      const raw = localStorage.getItem("pql-strategy-builder-prefill");
+      if (raw) {
+        const incoming = JSON.parse(raw) as Partial<BuilderState> & { origin?: string };
+        const { origin: o, ...rest } = incoming;
+        // Re-stamp condition ids so they're unique in this session
+        const rehydrate = (cs?: Condition[]) =>
+          (cs || []).map((c) => ({ ...c, id: Math.random().toString(36).slice(2) }));
+        setState({
+          ...DEFAULT_STATE,
+          ...rest,
+          entry: rehydrate(rest.entry),
+          takeProfit: rehydrate(rest.takeProfit),
+          stopLoss: rehydrate(rest.stopLoss),
+        });
+        if (typeof o === "string") setOrigin(o);
+        localStorage.removeItem("pql-strategy-builder-prefill");
+        prefilled = true;
+      }
+    } catch {
+      // Bad JSON in prefill — drop it and fall back to stored state.
+      try { localStorage.removeItem("pql-strategy-builder-prefill"); } catch {}
+    }
+    if (!prefilled) {
+      const stored = loadStored();
+      if (stored) setState(stored);
+    }
     setSaved(loadSaved());
   }, []);
 
@@ -572,6 +605,24 @@ export default function StrategyBuilder() {
 
   return (
     <div className="space-y-5">
+      {origin && (
+        <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 flex items-baseline justify-between gap-3">
+          <div className="text-sm">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-primary/70 mr-2">
+              Pre-filled
+            </span>
+            <span className="text-base-content/80">{origin}</span>
+          </div>
+          <button
+            onClick={() => setOrigin(null)}
+            className="btn btn-ghost btn-xs"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Strategy picker — Templates + My Strategies + Save current */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
