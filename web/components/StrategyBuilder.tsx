@@ -102,7 +102,11 @@ function loadStored(): BuilderState | null {
   try {
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    // Merge into DEFAULT_STATE so any fields added since the last save
+    // (e.g. fillMode / maxFillPrice in Phase O) fall back to defaults
+    // instead of arriving as undefined and exploding on .toFixed().
+    return { ...DEFAULT_STATE, ...parsed };
   } catch {
     return null;
   }
