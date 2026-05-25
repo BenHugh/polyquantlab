@@ -398,30 +398,38 @@ export default function StrategyBuilder() {
   const [origin, setOrigin] = useState<string | null>(null);
 
   useEffect(() => {
-    // One-shot prefill from Calibration / Sweep hand-off — takes
-    // precedence over the user's saved state for this mount only.
+    // One-shot prefill from Calibration / Sweep hand-off. React 18 Strict
+    // Mode double-mounts useEffect in dev, so we can't just "read + delete"
+    // — the second mount would see the prefill gone and fall back to the
+    // stored state, silently undoing the hand-off. Fix: write the merged
+    // result INTO the regular saved-state key so the second mount picks
+    // it up too. Idempotent.
     let prefilled = false;
     try {
       const raw = localStorage.getItem("pql-strategy-builder-prefill");
       if (raw) {
         const incoming = JSON.parse(raw) as Partial<BuilderState> & { origin?: string };
         const { origin: o, ...rest } = incoming;
-        // Re-stamp condition ids so they're unique in this session
         const rehydrate = (cs?: Condition[]) =>
           (cs || []).map((c) => ({ ...c, id: Math.random().toString(36).slice(2) }));
-        setState({
+        const merged: BuilderState = {
           ...DEFAULT_STATE,
           ...rest,
           entry: rehydrate(rest.entry),
           takeProfit: rehydrate(rest.takeProfit),
           stopLoss: rehydrate(rest.stopLoss),
-        });
+        };
+        setState(merged);
         if (typeof o === "string") setOrigin(o);
+        // Persist merged state into regular key so Strict-Mode remount
+        // (and any later refresh) sees the hand-off applied.
+        try {
+          localStorage.setItem(LOCAL_KEY, JSON.stringify(merged));
+        } catch {}
         localStorage.removeItem("pql-strategy-builder-prefill");
         prefilled = true;
       }
     } catch {
-      // Bad JSON in prefill — drop it and fall back to stored state.
       try { localStorage.removeItem("pql-strategy-builder-prefill"); } catch {}
     }
     if (!prefilled) {

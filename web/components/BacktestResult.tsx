@@ -162,15 +162,77 @@ function StatusBanner({ job, gaveUp }: { job: JobRecord; gaveUp: boolean }) {
     );
   }
 
-  // queued or running
+  // queued or running — show estimated progress bar
+  return <RunningProgress job={job} gaveUp={gaveUp} />;
+}
+
+function RunningProgress({ job, gaveUp }: { job: JobRecord; gaveUp: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(id);
+  }, []);
+
+  // Estimate progress: ~50ms / market on the worker (empirically measured
+  // for condition_based strategies; threshold_entry is similar). Cap at
+  // 95% until completion so we never show 100% on a still-running job.
+  // Queued = stuck at 5% (waiting for worker pickup).
+  const marketLimit = Number(
+    (job.params as Record<string, unknown>).market_limit || 50,
+  );
+  // Sweeps have n_cells × markets total work
+  const xAxis = (job.params as Record<string, unknown>).x_axis as
+    | { steps?: number }
+    | undefined;
+  const yAxis = (job.params as Record<string, unknown>).y_axis as
+    | { steps?: number }
+    | undefined;
+  const cellCount = xAxis?.steps
+    ? xAxis.steps * (yAxis?.steps || 1)
+    : 1;
+  const expectedMs = Math.max(2000, marketLimit * cellCount * 50);
+
+  let pct: number;
+  let label: string;
+  if (job.status === "queued") {
+    pct = 5;
+    label = "Queued — waiting for a worker…";
+  } else if (job.started_at) {
+    const elapsed = now - new Date(job.started_at).getTime();
+    pct = Math.min(95, (elapsed / expectedMs) * 100);
+    const remainingMs = Math.max(0, expectedMs - elapsed);
+    label = `Running… ~${Math.ceil(remainingMs / 1000)}s remaining`;
+  } else {
+    pct = 10;
+    label = "Starting…";
+  }
+
   return (
-    <div className="alert">
-      <span className="loading loading-spinner loading-sm" />
-      <span>
-        {job.status === "queued" ? "Queued — waiting for a worker…" : "Running…"}
-        {gaveUp &&
-          " (this job is taking longer than usual; the page will keep the result available — refresh to retry)"}
-      </span>
+    <div className="rounded-xl border border-base-300 bg-base-200/30 p-4 space-y-2">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-primary opacity-75 animate-ping" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
+          </span>
+          <span className="truncate">{label}</span>
+        </div>
+        <span className="font-mono text-xs tabular-nums text-base-content/70 shrink-0">
+          {pct.toFixed(0)}%
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-base-300 overflow-hidden">
+        <div
+          className="h-full bg-primary transition-all duration-300 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {gaveUp && (
+        <p className="text-xs text-warning">
+          This job is taking longer than usual. The page will keep the
+          result available — refresh to retry, or check back later.
+        </p>
+      )}
     </div>
   );
 }

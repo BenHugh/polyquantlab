@@ -209,13 +209,75 @@ table tbody tr:hover {
   border-color: oklch(36% 0.02 250);
 }
 
-/* Subtle inner glow on focused inputs — replaces DaisyUI's blocky outline. */
-input.input-bordered:focus,
-select.select-bordered:focus,
-textarea.textarea-bordered:focus {
+/* ── Form controls — Linear / Stripe-style polish ─────────────────────
+ * DaisyUI's default select/input is functional but flat. The overrides
+ * below give them: a softer border, slightly elevated hover state,
+ * an inner-glow focus ring (no blocky outline), and a custom chevron
+ * that follows the current text color so dark/light themes both look
+ * right. Targeting .select / .input / .textarea catches every DaisyUI
+ * variant (bordered, ghost, etc.) without forcing component refactors.
+ */
+
+select.select {
+  appearance: none;
+  background-color: var(--color-base-100);
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 14px) center, calc(100% - 9px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+  border: 1px solid oklch(50% 0.01 250 / 0.25);
+  transition: border-color 150ms ease, box-shadow 150ms ease,
+              background-color 150ms ease;
+}
+select.select:hover {
+  border-color: oklch(60% 0.02 250 / 0.45);
+  background-color: var(--color-base-200);
+}
+select.select:focus {
   outline: none;
-  box-shadow: 0 0 0 1px var(--color-primary), 0 0 0 3px oklch(70% 0.18 155 / 0.15);
   border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px oklch(70% 0.18 155 / 0.15);
+  background-color: var(--color-base-100);
+}
+/* Make sure the dropdown menu (browser-native) inherits proper colors */
+select.select option {
+  background-color: var(--color-base-100);
+  color: var(--color-base-content);
+}
+
+input.input,
+textarea.textarea {
+  border: 1px solid oklch(50% 0.01 250 / 0.25);
+  background-color: var(--color-base-100);
+  transition: border-color 150ms ease, box-shadow 150ms ease,
+              background-color 150ms ease;
+}
+input.input:hover,
+textarea.textarea:hover {
+  border-color: oklch(60% 0.02 250 / 0.45);
+}
+input.input:focus,
+textarea.textarea:focus,
+select.select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px oklch(70% 0.18 155 / 0.15);
+}
+
+/* Date / time pickers — the calendar/clock indicator inherits foreground
+ * so it's visible on dark themes (browser default is opaque black). */
+input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7) opacity(0.6);
+  cursor: pointer;
+}
+[data-theme="quant-light"] input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+[data-theme="quant-light"] input[type="date"]::-webkit-calendar-picker-indicator,
+[data-theme="quant-light"] input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.3) opacity(0.6);
 }
 
 /* Progress bars (used by Stripe checkout button etc.) */

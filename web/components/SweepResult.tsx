@@ -121,15 +121,7 @@ export default function SweepResult({ jobId }: { jobId: string }) {
     );
   }
   if (job.status !== "completed" || !job.result) {
-    return (
-      <div className="alert">
-        <span className="loading loading-spinner loading-sm" />
-        <span>
-          {job.status === "queued" ? "Queued…" : "Running…"}
-          {gaveUp && " (still working — refresh later to retrieve)"}
-        </span>
-      </div>
-    );
+    return <RunningProgress job={job} gaveUp={gaveUp} />;
   }
 
   return (
@@ -140,6 +132,69 @@ export default function SweepResult({ jobId }: { jobId: string }) {
 // ---------------------------------------------------------------------------
 // The actual heatmap + stats
 // ---------------------------------------------------------------------------
+
+function RunningProgress({ job, gaveUp }: { job: JobRecord; gaveUp: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(id);
+  }, []);
+
+  // Sweep cost is roughly cells × markets × 50ms. The worker runs them
+  // serially per cell (cells are batched but the parameter override
+  // still means each cell hits ClickHouse + the engine), so a 3×5
+  // grid over 100 markets ≈ 75 s.
+  const params = job.params as Record<string, unknown>;
+  const marketLimit = Number(params.market_limit || 100);
+  const xAxis = params.x_axis as { steps?: number } | undefined;
+  const yAxis = params.y_axis as { steps?: number } | undefined;
+  const cellCount = (xAxis?.steps || 1) * (yAxis?.steps || 1);
+  const expectedMs = Math.max(5000, cellCount * marketLimit * 50);
+
+  let pct: number;
+  let label: string;
+  if (job.status === "queued") {
+    pct = 5;
+    label = "Queued — waiting for a worker…";
+  } else if (job.started_at) {
+    const elapsed = now - new Date(job.started_at).getTime();
+    pct = Math.min(95, (elapsed / expectedMs) * 100);
+    const remainingMs = Math.max(0, expectedMs - elapsed);
+    label = `Running ${cellCount} cells × ${marketLimit} markets · ~${Math.ceil(remainingMs / 1000)}s remaining`;
+  } else {
+    pct = 10;
+    label = "Starting…";
+  }
+
+  return (
+    <div className="rounded-xl border border-base-300 bg-base-200/30 p-4 space-y-2">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-primary opacity-75 animate-ping" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
+          </span>
+          <span className="truncate">{label}</span>
+        </div>
+        <span className="font-mono text-xs tabular-nums text-base-content/70 shrink-0">
+          {pct.toFixed(0)}%
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-base-300 overflow-hidden">
+        <div
+          className="h-full bg-primary transition-all duration-300 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {gaveUp && (
+        <p className="text-xs text-warning">
+          This sweep is taking longer than usual. Results will appear here
+          when it finishes — refresh later.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function SweepBody({
   result,
