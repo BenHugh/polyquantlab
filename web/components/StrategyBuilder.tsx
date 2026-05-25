@@ -83,10 +83,13 @@ const DEFAULT_STATE: BuilderState = {
   sizeUsd: 10,
   maxTradesPerMarket: 1,
   fillMode: "walk_book",
-  // 0.85 default: refuses fills above 85¢. Catches the wide-book trap
-  // where mid=0.60 but best ask is 0.90 (extremely common for short-
-  // dated markets near resolution). Users can disable by setting 1.0.
-  maxFillPrice: 0.85,
+  // 0.95 default: catches obvious wide-book traps (mid=0.60 but best
+  // ask is 0.99) without introducing strong selection bias. Lower
+  // values like 0.65 filter to "UP token is cheap" markets — i.e.,
+  // markets the consensus thinks will lose — which biases an Always-UP
+  // backtest toward 0% win rate. Users who want a strict cap can
+  // dial it down explicitly.
+  maxFillPrice: 0.95,
   since: "",
   until: "",
   tradeLogic: "always_up",
@@ -443,6 +446,16 @@ export default function StrategyBuilder() {
           Mid-fill mode is <strong>optimistic</strong> — you can&apos;t actually
           fill at mid when the book is wide. Use it to compare against
           PolyBackTest&apos;s curve, but trust walk-book results for sizing.
+        </div>
+      )}
+
+      {state.maxFillPrice < 0.80 && state.tradeLogic === "always_up" && (
+        <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
+          Max fill price below 0.80 with Always UP filters to markets where
+          the UP token is cheap — i.e., markets consensus thinks UP will{" "}
+          <strong>lose</strong>. Betting UP into them is a contrarian trade
+          and routinely produces 0% win rate. Dial the cap back up (≥ 0.95)
+          to remove the bias, or flip Trade Logic to Always DOWN.
         </div>
       )}
 
