@@ -21,18 +21,156 @@ import toast from "react-hot-toast";
 
 type Ticker = "BTC" | "ETH" | "SOL";
 type EventType = "5m" | "15m" | "1h" | "4h" | "daily_up_down";
-type Op = ">=" | ">" | "<=" | "<" | "==";
-type ConditionType = "token_price" | "spread" | "time_to_resolution_s";
+type Op =
+  | ">="
+  | ">"
+  | "<="
+  | "<"
+  | "=="
+  | "!="
+  | "crosses_above"
+  | "crosses_below";
+type ConditionType =
+  | "token_price"
+  | "spread"
+  | "time_to_resolution_s"
+  | "time_since_market_open_s"
+  | "coin_move_since_open_usd"
+  | "coin_move_since_open_pct"
+  | "coin_price_volatility"
+  | "token_price_volatility";
 type TokenSide = "yes" | "no";
 type TradeLogic = "always_up" | "always_down";
 type FillMode = "walk_book" | "mid";
 
+// Parameter spec — mirrors backtest/conditions.py:PARAM_SPECS. The
+// ConditionRow component reads from this to render the right set of
+// operators / side toggle / window field per parameter type.
+interface ParamSpec {
+  label: string;
+  description: string;
+  unit: "probability" | "seconds" | "usd" | "percent" | "stddev";
+  defaultValue: number;
+  defaultOp: Op;
+  validOps: readonly Op[];
+  hasSide: boolean;
+  needsWindow: boolean;
+}
+
+const BASIC_OPS: readonly Op[] = [">=", ">", "<=", "<", "==", "!="];
+const ASYM_OPS: readonly Op[] = [">=", ">", "<=", "<"];
+const CROSS_OPS: readonly Op[] = ["crosses_above", "crosses_below"];
+const FULL_OPS: readonly Op[] = [...BASIC_OPS, ...CROSS_OPS];
+
+const PARAM_SPECS: Record<ConditionType, ParamSpec> = {
+  token_price: {
+    label: "Token price",
+    description: "Live mid of the UP or DOWN token, 0–1.",
+    unit: "probability",
+    defaultValue: 0.6,
+    defaultOp: ">=",
+    validOps: FULL_OPS,
+    hasSide: true,
+    needsWindow: false,
+  },
+  spread: {
+    label: "Bid-ask spread",
+    description: "Best ask − best bid on the side. Tight = real liquidity.",
+    unit: "probability",
+    defaultValue: 0.05,
+    defaultOp: "<=",
+    validOps: ASYM_OPS,
+    hasSide: true,
+    needsWindow: false,
+  },
+  time_to_resolution_s: {
+    label: "Time until market close",
+    description: "Seconds until the market resolves.",
+    unit: "seconds",
+    defaultValue: 300,
+    defaultOp: "<=",
+    validOps: ASYM_OPS,
+    hasSide: false,
+    needsWindow: false,
+  },
+  time_since_market_open_s: {
+    label: "Time since market open",
+    description: "Seconds since the first recorded snapshot.",
+    unit: "seconds",
+    defaultValue: 30,
+    defaultOp: ">=",
+    validOps: ASYM_OPS,
+    hasSide: false,
+    needsWindow: false,
+  },
+  coin_move_since_open_usd: {
+    label: "Coin move since open ($)",
+    description: "Current underlying minus underlying at market open.",
+    unit: "usd",
+    defaultValue: 50,
+    defaultOp: ">=",
+    validOps: FULL_OPS,
+    hasSide: false,
+    needsWindow: false,
+  },
+  coin_move_since_open_pct: {
+    label: "Coin move since open (%)",
+    description: "% change of underlying since market open.",
+    unit: "percent",
+    defaultValue: 0.1,
+    defaultOp: ">=",
+    validOps: FULL_OPS,
+    hasSide: false,
+    needsWindow: false,
+  },
+  coin_price_volatility: {
+    label: "Coin price volatility",
+    description: "σ of underlying over a recent window.",
+    unit: "stddev",
+    defaultValue: 5,
+    defaultOp: ">=",
+    validOps: ASYM_OPS,
+    hasSide: false,
+    needsWindow: true,
+  },
+  token_price_volatility: {
+    label: "Token price volatility",
+    description: "σ of token mid over a recent window.",
+    unit: "stddev",
+    defaultValue: 0.05,
+    defaultOp: ">=",
+    validOps: ASYM_OPS,
+    hasSide: true,
+    needsWindow: true,
+  },
+};
+
+const OP_LABELS: Record<Op, string> = {
+  ">=": "≥",
+  ">": ">",
+  "<=": "≤",
+  "<": "<",
+  "==": "=",
+  "!=": "≠",
+  crosses_above: "crosses ↑",
+  crosses_below: "crosses ↓",
+};
+
+const UNIT_HINT: Record<ParamSpec["unit"], string> = {
+  probability: "(0 – 1)",
+  seconds: "seconds",
+  usd: "$",
+  percent: "%",
+  stddev: "σ",
+};
+
 interface Condition {
   id: string;
   type: ConditionType;
-  side?: TokenSide; // only used for token_price / spread
+  side?: TokenSide;       // only present when PARAM_SPECS[type].hasSide
   op: Op;
   value: number;
+  window_sec?: number;    // only present when PARAM_SPECS[type].needsWindow
 }
 
 interface BuilderState {
@@ -53,28 +191,20 @@ interface BuilderState {
   stopLoss: Condition[];
 }
 
-const TYPE_LABELS: Record<ConditionType, string> = {
-  token_price: "Token price",
-  spread: "Spread",
-  time_to_resolution_s: "Time to resolution (s)",
-};
-
-const TYPE_DEFAULT_VALUE: Record<ConditionType, number> = {
-  token_price: 0.6,
-  spread: 0.05,
-  time_to_resolution_s: 300,
-};
-
 const newCondition = (
-  type: ConditionType,
+  type: ConditionType = "token_price",
   side: TokenSide = "yes",
-): Condition => ({
-  id: Math.random().toString(36).slice(2),
-  type,
-  side: type === "time_to_resolution_s" ? undefined : side,
-  op: type === "time_to_resolution_s" ? "<=" : ">=",
-  value: TYPE_DEFAULT_VALUE[type],
-});
+): Condition => {
+  const spec = PARAM_SPECS[type];
+  return {
+    id: Math.random().toString(36).slice(2),
+    type,
+    side: spec.hasSide ? side : undefined,
+    op: spec.defaultOp,
+    value: spec.defaultValue,
+    window_sec: spec.needsWindow ? 60 : undefined,
+  };
+};
 
 const DEFAULT_STATE: BuilderState = {
   ticker: "BTC",
@@ -163,12 +293,21 @@ export default function StrategyBuilder() {
         if (c.id !== id) return c;
         const next = { ...c, ...patch };
         if (patch.type) {
-          // Reset value + side when condition type changes so the form
-          // never holds stale fields that don't match the new primitive
-          // (e.g. a "side: yes" hanging on a time_to_resolution row).
-          next.value = TYPE_DEFAULT_VALUE[patch.type];
-          next.side = patch.type === "time_to_resolution_s" ? undefined : "yes";
-          next.op = patch.type === "time_to_resolution_s" ? "<=" : ">=";
+          // Reset to the new type's spec — value / side / op / window
+          // from the old type don't survive a type change so the form
+          // never holds inconsistent fields.
+          const fresh = newCondition(patch.type);
+          next.value = fresh.value;
+          next.side = fresh.side;
+          next.op = fresh.op;
+          next.window_sec = fresh.window_sec;
+        }
+        // If the user changed op manually, validate it's still in the
+        // type's allowed set (e.g. switching from token_price=crosses
+        // to spread, which doesn't support crosses).
+        const spec = PARAM_SPECS[next.type];
+        if (!spec.validOps.includes(next.op)) {
+          next.op = spec.defaultOp;
         }
         return next;
       }),
@@ -178,15 +317,16 @@ export default function StrategyBuilder() {
   // -- Plain English summary (mirrors backtest/conditions.py:humanise) --
 
   function humanise(c: Condition): string {
-    const op =
-      { ">=": "≥", ">": ">", "<=": "≤", "<": "<", "==": "=" }[c.op] || c.op;
-    if (c.type === "token_price") {
-      return `${c.side?.toUpperCase()} price ${op} ${c.value}`;
-    }
-    if (c.type === "spread") {
-      return `${c.side?.toUpperCase()} spread ${op} ${c.value}`;
-    }
-    return `time to res ${op} ${c.value}s`;
+    const op = OP_LABELS[c.op] || c.op;
+    const spec = PARAM_SPECS[c.type];
+    const sidePrefix = spec.hasSide ? `${c.side?.toUpperCase() ?? ""} ` : "";
+    const windowSuffix = spec.needsWindow ? ` (${c.window_sec}s window)` : "";
+    const unit =
+      spec.unit === "usd" ? "$" :
+      spec.unit === "percent" ? "%" :
+      spec.unit === "seconds" ? "s" :
+      "";
+    return `${sidePrefix}${spec.label} ${op} ${unit}${c.value}${windowSuffix}`;
   }
 
   const readsAs = useMemo(() => {
@@ -612,21 +752,28 @@ function ConditionRow({
   onRemove: () => void;
   onPatch: (patch: Partial<Condition>) => void;
 }) {
-  const showSide = c.type !== "time_to_resolution_s";
+  const spec = PARAM_SPECS[c.type];
+  const step =
+    spec.unit === "seconds" ? 30 :
+    spec.unit === "usd" ? 10 :
+    spec.unit === "stddev" ? 0.01 :
+    0.01;
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg bg-base-100 border border-base-300/60">
+      {/* Parameter type */}
       <select
-        className="select select-xs select-bordered"
+        className="select select-xs select-bordered min-w-[8.5rem]"
         value={c.type}
         onChange={(e) => onPatch({ type: e.target.value as ConditionType })}
+        title={spec.description}
       >
-        <option value="token_price">{TYPE_LABELS.token_price}</option>
-        <option value="spread">{TYPE_LABELS.spread}</option>
-        <option value="time_to_resolution_s">
-          {TYPE_LABELS.time_to_resolution_s}
-        </option>
+        {(Object.keys(PARAM_SPECS) as ConditionType[]).map((t) => (
+          <option key={t} value={t}>{PARAM_SPECS[t].label}</option>
+        ))}
       </select>
-      {showSide && (
+
+      {/* Side (UP/DOWN) — only when the parameter has a side */}
+      {spec.hasSide && (
         <select
           className="select select-xs select-bordered"
           value={c.side ?? "yes"}
@@ -636,31 +783,53 @@ function ConditionRow({
           <option value="no">DOWN</option>
         </select>
       )}
+
+      {/* Operator — only those valid for this parameter */}
       <select
         className="select select-xs select-bordered"
         value={c.op}
         onChange={(e) => onPatch({ op: e.target.value as Op })}
       >
-        <option value=">=">≥</option>
-        <option value=">">{">"}</option>
-        <option value="<=">≤</option>
-        <option value="<">{"<"}</option>
-        <option value="==">=</option>
+        {spec.validOps.map((op) => (
+          <option key={op} value={op}>{OP_LABELS[op]}</option>
+        ))}
       </select>
+
+      {/* Threshold value */}
       <input
         type="number"
-        className="input input-xs input-bordered w-28 tabular-nums"
-        step={c.type === "time_to_resolution_s" ? 30 : 0.01}
+        className="input input-xs input-bordered w-24 tabular-nums"
+        step={step}
         value={c.value}
         onChange={(e) =>
           onPatch({ value: parseFloat(e.target.value) || 0 })
         }
       />
       <span className="text-[10px] text-base-content/40 font-mono">
-        {c.type === "token_price" || c.type === "spread"
-          ? "(0 – 1)"
-          : "(seconds)"}
+        {UNIT_HINT[spec.unit]}
       </span>
+
+      {/* Lookback window — only for volatility primitives */}
+      {spec.needsWindow && (
+        <>
+          <span className="text-[10px] text-base-content/40 font-mono uppercase tracking-widest">
+            over
+          </span>
+          <input
+            type="number"
+            className="input input-xs input-bordered w-20 tabular-nums"
+            step={10}
+            min={10}
+            max={3600}
+            value={c.window_sec ?? 60}
+            onChange={(e) =>
+              onPatch({ window_sec: parseInt(e.target.value, 10) || 60 })
+            }
+          />
+          <span className="text-[10px] text-base-content/40 font-mono">s</span>
+        </>
+      )}
+
       <button
         className="btn btn-ghost btn-xs btn-square ml-auto text-base-content/50 hover:text-error"
         onClick={onRemove}

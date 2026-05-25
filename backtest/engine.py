@@ -159,6 +159,19 @@ def _replay_single_market(
     if not snapshots:
         return [], 0.0, 0.0
 
+    # Market-open reference (first recorded snapshot). Phase Q evaluators
+    # — coin_move_since_open, time_since_market_open — close over this.
+    # We pass it through to every strategy call so per-market state
+    # doesn't have to live on the strategy instance.
+    market_open = snapshots[0]
+
+    # Reset any per-market state on the strategy (e.g. crosses_above /
+    # crosses_below previous-value tracking). Safe to call even on
+    # function strategies — getattr returns None and we skip.
+    reset_state = getattr(strategy, "reset_market_state", None)
+    if callable(reset_state):
+        reset_state()
+
     history: deque[OrderBookSnapshot] = deque(maxlen=HISTORY_WINDOW)
     trades: list[Trade] = []
     open_position: tuple[Side, float, float, int] | None = None
@@ -175,6 +188,11 @@ def _replay_single_market(
         sig is not None and "resolution_at" in sig.parameters
     )
 
+    # ConditionBasedStrategy.__call__ accepts market_open; function
+    # strategies don't. Detect by attribute presence (class instances
+    # have it, partials don't).
+    pass_market_open = hasattr(strategy, "reset_market_state")
+
     for snap in snapshots:
         history.append(snap)
 
@@ -183,10 +201,17 @@ def _replay_single_market(
             if on_in_position is None:
                 continue
             try:
-                exit_signal = on_in_position(
-                    list(history)[:-1], snap, open_position[:3],
-                    resolution_at=resolution_at,
-                )
+                if pass_market_open:
+                    exit_signal = on_in_position(
+                        list(history)[:-1], snap, open_position[:3],
+                        resolution_at=resolution_at,
+                        market_open=market_open,
+                    )
+                else:
+                    exit_signal = on_in_position(
+                        list(history)[:-1], snap, open_position[:3],
+                        resolution_at=resolution_at,
+                    )
             except TypeError:
                 exit_signal = on_in_position(list(history)[:-1], snap, open_position[:3])
             if exit_signal != "exit":
@@ -237,7 +262,13 @@ def _replay_single_market(
             continue
 
         try:
-            if pass_resolution:
+            if pass_market_open:
+                action = strategy(
+                    list(history)[:-1], snap,
+                    resolution_at=resolution_at,
+                    market_open=market_open,
+                )
+            elif pass_resolution:
                 action = strategy(list(history)[:-1], snap, resolution_at=resolution_at)
             else:
                 action = strategy(list(history)[:-1], snap)

@@ -150,6 +150,17 @@ class ConditionBasedStrategy:
         self.trade_logic = trade_logic
         self.size_usd = float(size_usd)
         self.max_trades_per_market = int(max_trades_per_market)
+        # Cross-op state lives on the strategy instance so crosses_above /
+        # crosses_below can track the previous LHS value across snapshots.
+        # The engine resets this per-market via reset_market_state().
+        self._entry_cross_state: dict[str, float] = {}
+        self._exit_cross_state: dict[str, float] = {}
+
+    def reset_market_state(self) -> None:
+        """Called by the engine at the start of each new market replay
+        so cross-state from the previous market doesn't bleed across."""
+        self._entry_cross_state = {}
+        self._exit_cross_state = {}
 
     def __call__(
         self,
@@ -157,13 +168,18 @@ class ConditionBasedStrategy:
         current: OrderBookSnapshot,
         *,
         resolution_at: Any = None,
+        market_open: OrderBookSnapshot | None = None,
     ) -> Action:
         # Empty entry → "buy at first opportunity" — matches PolyBackTest's
         # default when the user wants a buy-and-hold baseline. The engine's
         # max_trades_per_market + max_fill_price still gate downstream so
         # we don't end up firing 8 times/sec.
         if self.entry and not evaluate_section(
-            self.entry, current, resolution_at=resolution_at,
+            self.entry, current,
+            resolution_at=resolution_at,
+            market_open=market_open,
+            history=history,
+            cross_state=self._entry_cross_state,
         ):
             return None
         side = Side.BUY_YES if self.trade_logic == "always_up" else Side.BUY_NO
@@ -176,16 +192,25 @@ class ConditionBasedStrategy:
         position: tuple[Side, float, float],
         *,
         resolution_at: Any = None,
+        market_open: OrderBookSnapshot | None = None,
     ):
         # An "exit" returned for either TP or SL — engine doesn't care
         # which, only that the position should close at the current best
         # opposite bid.
         if self.take_profit and evaluate_section(
-            self.take_profit, current, resolution_at=resolution_at,
+            self.take_profit, current,
+            resolution_at=resolution_at,
+            market_open=market_open,
+            history=history,
+            cross_state=self._exit_cross_state,
         ):
             return "exit"
         if self.stop_loss and evaluate_section(
-            self.stop_loss, current, resolution_at=resolution_at,
+            self.stop_loss, current,
+            resolution_at=resolution_at,
+            market_open=market_open,
+            history=history,
+            cross_state=self._exit_cross_state,
         ):
             return "exit"
         return None
