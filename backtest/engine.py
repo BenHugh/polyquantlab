@@ -165,6 +165,51 @@ def _best_ask_for_side(snap: OrderBookSnapshot, side: Side) -> float | None:
     return None
 
 
+def _book_side_for_limit(snap: OrderBookSnapshot, side: Side) -> list:
+    """Return the side of the book where our limit order joins the
+    queue.  A BUY adds liquidity on the bid side; a SELL on the ask
+    side. (We don't have NO-bids in the same dataset as YES-asks, so
+    each token side has its own pair of stacks.)"""
+    if side == Side.BUY_YES:
+        return list(snap.yes_bids)
+    if side == Side.BUY_NO:
+        return list(snap.no_bids)
+    if side == Side.SELL_YES:
+        return list(snap.yes_asks)
+    if side == Side.SELL_NO:
+        return list(snap.no_asks)
+    return []
+
+
+def _size_at_level(snap: OrderBookSnapshot, side: Side, target_price: float) -> float:
+    """How many tokens sit at `target_price` on the relevant side of
+    the book in this snapshot. 0 if the level is empty.
+
+    Polymarket prices are in 1¢ increments so we can compare with a
+    1e-4 tolerance without losing fidelity to the actual tick."""
+    levels = _book_side_for_limit(snap, side)
+    for lvl in levels:
+        if abs(lvl.price - target_price) < 1e-4:
+            return float(lvl.size)
+    return 0.0
+
+
+def _book_crossed(snap: OrderBookSnapshot, side: Side, limit_price: float) -> bool:
+    """True when an aggressive opposite-side flow has reached our
+    price (best bid ≤ our buy, best ask ≥ our sell). This is the
+    Phase Y v1 fill trigger; the queue-aware path uses it AND the
+    queue-depletion path together."""
+    if side == Side.BUY_YES and snap.yes_bids:
+        return snap.yes_bids[0].price <= limit_price
+    if side == Side.BUY_NO and snap.no_bids:
+        return snap.no_bids[0].price <= limit_price
+    if side == Side.SELL_YES and snap.yes_asks:
+        return snap.yes_asks[0].price >= limit_price
+    if side == Side.SELL_NO and snap.no_asks:
+        return snap.no_asks[0].price >= limit_price
+    return False
+
+
 def _try_limit_fill(
     snapshots: list[OrderBookSnapshot],
     start_idx: int,
@@ -172,44 +217,73 @@ def _try_limit_fill(
     limit_price: float,
     timeout_s: float,
     size_usd: float,
+    queue_aware: bool = False,
 ) -> tuple[float, float, int] | None:
-    """Walk forward from `start_idx` looking for a snapshot where the
-    market crossed our limit. Returns (avg_price, filled_usd, end_idx)
-    or None if we timed out / never filled.
+    """Walk forward from `start_idx` until the limit order fills or
+    the timeout expires. Returns (avg_price, filled_usd, end_idx) or
+    None if we never filled.
 
-    Maker fill model (v1):
-      For a BUY at `limit_price`: we sit on the bid stack waiting for an
-      aggressive seller to come down to our price. Approximated as
-      "did best_yes_bid (or no_bid) drop to ≤ limit_price during the
-      timeout window?". When that happens we assume our queue position
-      cleared and we filled at the limit price exactly. (Zero slippage,
-      worst-case maker rebate of 0% — matches Polymarket's current
-      crypto-market fee schedule.)
+    Two fill paths:
 
-    For a SELL at `limit_price`: symmetric. Wait for best_yes_ask (or
-    no_ask) to rise to ≥ limit_price.
+      1. "Book crossed" — an aggressive opposite-side order swept down
+         (or up) to our price. Implies our level was fully consumed,
+         which fills any queue position. This is the Phase Y v1 model.
 
-    This is intentionally simple. It captures the essential maker risk
-    ("your order may never fill") without modelling queue depth or
-    cancel rate. A v2 can add per-level queue tracking from snapshot
-    deltas — see Phase Y plan note in [[known-limitations]]."""
+      2. "Queue depleted" (only when queue_aware=True) — even if no
+         aggressive cross happens, the size sitting AHEAD of us at our
+         price level can shrink over time: some orders fill via partial
+         crosses, others get cancelled. We approximate both as the
+         observed decrease in size_at_level over time. Once the
+         cumulative decrease ≥ our initial queue position, we declare
+         the order filled. Captures cancel-rate behaviour: high
+         cancel-rate levels clear out and fill more aggressively even
+         when the market price didn't visit us.
+
+    The queue model deliberately conflates fills and cancels into a
+    single "level decrease" signal. Distinguishing them properly
+    requires joining with the trades table per snapshot, which we
+    skip for v1 — the conflation underestimates fill probability
+    slightly (some "fills" at our level happened to other people
+    AHEAD of us, not us), but the direction is right and the
+    direction matters: with queue_aware=True a maker strategy
+    fills MORE often, not less.
+
+    Maker fee is 0% on both paths (Polymarket crypto-market current
+    schedule)."""
     start_snap = snapshots[start_idx]
     deadline = start_snap.ts.timestamp() + timeout_s
+
+    initial_queue: float | None = None
+    prev_size_at_level: float | None = None
+    cumulative_decrease: float = 0.0
+    if queue_aware:
+        initial_queue = _size_at_level(start_snap, side, limit_price)
+        prev_size_at_level = initial_queue
+
     for j in range(start_idx, len(snapshots)):
         snap = snapshots[j]
         if snap.ts.timestamp() > deadline:
             return None
-        if side == Side.BUY_YES and snap.yes_bids:
-            if snap.yes_bids[0].price <= limit_price:
-                return limit_price, size_usd, j
-        elif side == Side.BUY_NO and snap.no_bids:
-            if snap.no_bids[0].price <= limit_price:
-                return limit_price, size_usd, j
-        elif side == Side.SELL_YES and snap.yes_asks:
-            if snap.yes_asks[0].price >= limit_price:
-                return limit_price, size_usd, j
-        elif side == Side.SELL_NO and snap.no_asks:
-            if snap.no_asks[0].price >= limit_price:
+        # Path 1: aggressive cross.
+        if _book_crossed(snap, side, limit_price):
+            return limit_price, size_usd, j
+        # Path 2: queue depletion (opt-in).
+        if queue_aware and prev_size_at_level is not None:
+            cur_size = _size_at_level(snap, side, limit_price)
+            delta = prev_size_at_level - cur_size
+            if delta > 0:
+                cumulative_decrease += delta
+            elif delta < 0:
+                # New orders arrived AT or behind our level. They don't
+                # push us up the queue — but they don't push us back
+                # either, since we were already in front of them. Ignore.
+                pass
+            prev_size_at_level = cur_size
+            # If the initial level was empty (no queue ahead of us), the
+            # first opposite-side order that reaches our price fills us
+            # — already handled by Path 1, so a 0 initial_queue means we
+            # never resolve via Path 2 here.
+            if initial_queue and cumulative_decrease >= initial_queue:
                 return limit_price, size_usd, j
     return None
 
@@ -225,6 +299,7 @@ def _replay_single_market(
     order_type: str = "market",
     limit_offset_cents: float = -2.0,
     limit_timeout_s: float = 60.0,
+    queue_aware: bool = False,
 ) -> tuple[list[Trade], float, float]:
     """Replay one market. Returns (trades, pnl, fees).
 
@@ -401,6 +476,7 @@ def _replay_single_market(
             current_idx = snapshots.index(snap)
             fill = _try_limit_fill(
                 snapshots, current_idx, side, limit_price, limit_timeout_s, size_usd,
+                queue_aware=queue_aware,
             )
             if fill is None:
                 # Order never filled inside the timeout; cancel + scan on.
@@ -506,6 +582,7 @@ async def _process_one_market(
     order_type: str = "market",
     limit_offset_cents: float = -2.0,
     limit_timeout_s: float = 60.0,
+    queue_aware: bool = False,
 ) -> tuple[list[Trade], float, float] | None:
     """Load + replay one market under the global concurrency cap.
 
@@ -557,6 +634,7 @@ async def _process_one_market(
                 order_type=order_type,
                 limit_offset_cents=limit_offset_cents,
                 limit_timeout_s=limit_timeout_s,
+                queue_aware=queue_aware,
             )
             return (trades, pnl, fees) if trades else None
         except Exception:  # noqa: BLE001
@@ -588,6 +666,7 @@ async def run_backtest(
         "fill_mode", "max_fill_price",
         "dispute_pct", "na_pct", "dispute_payoff_pct", "random_seed",
         "order_type", "limit_offset_cents", "limit_timeout_s",
+        "queue_aware",
     }
     spec_for_strategy = {
         k: v for k, v in strategy_spec.items() if k not in EXECUTION_PARAMS
@@ -636,6 +715,7 @@ async def run_backtest(
     except (TypeError, ValueError):
         limit_timeout_s = 60.0
     limit_timeout_s = max(1.0, min(3600.0, limit_timeout_s))
+    queue_aware = bool(strategy_spec.get("queue_aware", False))
 
     strategy = build_strategy(spec_for_strategy)
     universe = await list_resolved_markets(
@@ -669,6 +749,7 @@ async def run_backtest(
                 order_type=order_type,
                 limit_offset_cents=limit_offset_cents,
                 limit_timeout_s=limit_timeout_s,
+                queue_aware=queue_aware,
             )
             for m in universe
         ]

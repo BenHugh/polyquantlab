@@ -265,6 +265,12 @@ interface BuilderState {
   orderType: "market" | "limit";
   limitOffsetCents: number;  // signed; e.g. -2 = 2c below best ask for a buy
   limitTimeoutS: number;     // cancel + skip if unfilled after this many seconds
+  // Queue-aware fill modeling (Phase Z). When ON: at entry we record
+  // the size sitting AHEAD of us at our limit price and track its
+  // decrease over time (fills + cancels conflated). The order also
+  // fills when our queue position reaches zero even if the book
+  // never explicitly crossed our level.
+  queueAware: boolean;
   // Conditions — each section is a root Group (op = AND by default)
   // containing leaf Conditions and / or nested Groups.
   tradeLogic: TradeLogic;
@@ -455,6 +461,7 @@ const DEFAULT_STATE: BuilderState = {
   orderType: "market",
   limitOffsetCents: -2,
   limitTimeoutS: 60,
+  queueAware: false,
   tradeLogic: "always_up",
   entry: mkGroup(newCondition("token_price")),
   takeProfit: mkGroup(),
@@ -878,6 +885,11 @@ export default function StrategyBuilder() {
       spec.order_type = "limit";
       spec.limit_offset_cents = state.limitOffsetCents;
       spec.limit_timeout_s = state.limitTimeoutS;
+      // queue_aware only matters for limit orders; market orders fill
+      // instantly via walk_book so the queue model never engages.
+      if (state.queueAware) {
+        spec.queue_aware = true;
+      }
     }
     return spec;
   }
@@ -1322,6 +1334,22 @@ export default function StrategyBuilder() {
                   }
                   title="Cancel and skip the entry if the limit hasn't filled in this many seconds."
                 />
+              </Field>
+              <Field label="Queue-aware fills">
+                <label className="flex items-center gap-2 cursor-pointer p-2 rounded border border-base-300/60 bg-base-200/30 hover:bg-base-200/60 transition-colors">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-sm checkbox-accent"
+                    checked={state.queueAware}
+                    onChange={(e) => update("queueAware", e.target.checked)}
+                  />
+                  <span className="text-xs text-base-content/70">
+                    {state.queueAware ? "On — fills when queue ahead clears" : "Off — fills only when book crosses"}
+                  </span>
+                </label>
+                <p className="text-[10px] text-base-content/50 mt-1 leading-snug">
+                  Models queue position: a maker order fills either when the book crosses your price (existing model) OR when enough size cancels/fills ahead of you so your turn comes up. Increases fill rate vs the strict crossed-book model.
+                </p>
               </Field>
             </>
           )}
