@@ -18,6 +18,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
+import { generatePython, type CodegenGroup, type CodegenSpec } from "@/libs/pythonCodegen";
 
 type Ticker = "BTC" | "ETH" | "SOL";
 type EventType = "5m" | "15m" | "1h" | "4h" | "daily_up_down";
@@ -253,6 +254,11 @@ interface BuilderState {
   maxFillPrice: number;
   since: string;
   until: string;
+  // Resolution risk modeling (Phase X.3) — UMA dispute / N/A simulation.
+  // All zero = clean settlement (legacy behaviour).
+  disputePct: number;        // 0..1 fraction of markets that get disputed
+  naPct: number;             // 0..1 fraction that resolve N/A (half-refund)
+  disputePayoffPct: number;  // payoff per share when disputed (default 0.5)
   // Conditions — each section is a root Group (op = AND by default)
   // containing leaf Conditions and / or nested Groups.
   tradeLogic: TradeLogic;
@@ -432,6 +438,12 @@ const DEFAULT_STATE: BuilderState = {
   maxFillPrice: 0.95,
   since: "",
   until: "",
+  // Resolution risk off by default — turning it on is opt-in, since
+  // most users will compare against a clean backtest first and only
+  // stress-test for UMA risk once a strategy looks promising.
+  disputePct: 0,
+  naPct: 0,
+  disputePayoffPct: 0.5,
   tradeLogic: "always_up",
   entry: mkGroup(newCondition("token_price")),
   takeProfit: mkGroup(),
@@ -478,6 +490,8 @@ export default function StrategyBuilder() {
   // Picker panel open state — single dropdown housing both Templates
   // (read-only presets) and My Strategies (user-saved).
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Visual vs Code tab — Phase X.1
+  const [view, setView] = useState<"visual" | "code">("visual");
 
   // Origin banner shown when a strategy was pushed in from Calibration
   // or Sweep ("Applied — Calibration edge · BTC 5m · UP under-priced…").
@@ -829,7 +843,7 @@ export default function StrategyBuilder() {
 
   /** Build the wire-format strategy spec from the current builder state. */
   function buildStrategySpec() {
-    return {
+    const spec: Record<string, unknown> = {
       type: "condition_based",
       entry: serialiseSection(state.entry),
       take_profit: serialiseSection(state.takeProfit),
@@ -840,6 +854,14 @@ export default function StrategyBuilder() {
       fill_mode: state.fillMode,
       max_fill_price: state.maxFillPrice,
     };
+    // Only thread resolution-risk params when the user opted in (any
+    // of them > 0). Keeps the wire format clean for the 99% baseline.
+    if (state.disputePct > 0 || state.naPct > 0) {
+      spec.dispute_pct = state.disputePct;
+      spec.na_pct = state.naPct;
+      spec.dispute_payoff_pct = state.disputePayoffPct;
+    }
+    return spec;
   }
 
   async function submit() {
@@ -1077,6 +1099,33 @@ export default function StrategyBuilder() {
         </span>
       </div>
 
+      {/* Visual / Code view toggle (Phase X.1). Compiling to Python is a
+        * pure-function call on the builder state — no round-trip to the
+        * backend — so we render the script live as the user edits.
+        */}
+      <div role="tablist" className="tabs tabs-boxed inline-flex bg-base-200/40 p-1 rounded-lg">
+        <button
+          role="tab"
+          onClick={() => setView("visual")}
+          className={`tab tab-sm ${view === "visual" ? "tab-active" : ""}`}
+        >
+          Visual
+        </button>
+        <button
+          role="tab"
+          onClick={() => setView("code")}
+          className={`tab tab-sm ${view === "code" ? "tab-active" : ""}`}
+        >
+          Generated Code
+        </button>
+      </div>
+
+      {view === "code" && (
+        <GeneratedCodePanel state={state} />
+      )}
+
+      {view === "visual" && (
+      <>
       <Section
         n="01"
         title="Setup"
@@ -1209,6 +1258,61 @@ export default function StrategyBuilder() {
                 (PolyBackTest&apos;s default). Useful for train/test splits or
                 isolating a regime — e.g. test on January, validate on February.
               </p>
+
+              {/* Resolution-risk panel — opt-in stress test of UMA dispute /
+                * N/A outcomes. Lives under Advanced because most first-time
+                * backtests run with clean settlement; you flip this on once
+                * a strategy looks promising and you want to know how badly
+                * disputed markets can hurt it. */}
+              <div className="md:col-span-2 mt-2 pt-3 border-t border-base-300/40">
+                <div className="text-[10px] uppercase tracking-widest text-base-content/50 mb-2">
+                  Resolution risk (UMA dispute / N/A)
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <Field label={`Dispute % · ${(state.disputePct * 100).toFixed(1)}%`}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.2}
+                      step={0.005}
+                      className="range range-xs range-warning"
+                      value={state.disputePct}
+                      onChange={(e) => update("disputePct", parseFloat(e.target.value))}
+                      title="Fraction of markets simulated as disputed by UMA — payoff halves instead of clean win/loss."
+                    />
+                  </Field>
+                  <Field label={`N/A % · ${(state.naPct * 100).toFixed(1)}%`}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.1}
+                      step={0.002}
+                      className="range range-xs range-warning"
+                      value={state.naPct}
+                      onChange={(e) => update("naPct", parseFloat(e.target.value))}
+                      title="Fraction of markets resolved ambiguously — both sides refund at 0.50."
+                    />
+                  </Field>
+                  <Field label={`Dispute payoff · ${state.disputePayoffPct.toFixed(2)}`}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      className="range range-xs range-warning"
+                      value={state.disputePayoffPct}
+                      onChange={(e) => update("disputePayoffPct", parseFloat(e.target.value))}
+                      title="Per-share payoff on a disputed market. 0.5 = half-refund (most common)."
+                    />
+                  </Field>
+                </div>
+                <p className="text-[11px] text-base-content/40 leading-relaxed mt-2">
+                  Stress-test how UMA dispute risk affects your strategy.
+                  Polymarket historical dispute rate is ~5% on contested
+                  markets; N/A is ~2%. Deterministic per market — same
+                  strategy + same data = same backtest result.
+                </p>
+              </div>
             </div>
           )}
         </div>
@@ -1289,6 +1393,8 @@ export default function StrategyBuilder() {
           onPatchCond={(p, patch) => patchCond("stopLoss", p, patch)}
         />
       </Section>
+      </>
+      )}
 
       {state.takeProfit.children.length === 0 && state.stopLoss.children.length === 0 && (
         <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
@@ -1650,6 +1756,98 @@ function ConditionRow({
       </button>
     </div>
   );
+}
+
+/* ─── Generated Code panel (Phase X.1) ────────────────────────────── */
+
+/**
+ * Live Python compilation of the current builder state. The user can
+ * download the script, set their API key, and run it locally to
+ * reproduce the website backtest. Mirrors PolyBackTest's compiled-
+ * strategy shape so a migrating user lands on familiar code.
+ */
+function GeneratedCodePanel({ state }: { state: BuilderState }) {
+  const code = useMemo(() => {
+    // Drop the React-only ids before handing the spec to the codegen
+    // module — keeps the generated script clean.
+    const sanitised: CodegenSpec = {
+      ticker: state.ticker,
+      eventType: state.eventType,
+      marketLimit: state.marketLimit,
+      sizeUsd: state.sizeUsd,
+      maxTradesPerMarket: state.maxTradesPerMarket,
+      fillMode: state.fillMode,
+      maxFillPrice: state.maxFillPrice,
+      tradeLogic: state.tradeLogic,
+      entry: stripGroupIds(state.entry),
+      takeProfit: stripGroupIds(state.takeProfit),
+      stopLoss: stripGroupIds(state.stopLoss),
+    };
+    return generatePython(sanitised);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(code);
+      toast.success("Copied to clipboard");
+    } catch {
+      toast.error("Copy failed — select + Cmd+C manually");
+    }
+  }
+  function download() {
+    const blob = new Blob([code], { type: "text/x-python" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `polyquantlab-strategy-${Date.now()}.py`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <section className="rounded-xl border border-base-300 bg-base-200/30 overflow-hidden">
+      <div className="px-5 py-3 border-b border-base-300/60 flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-sm">
+          <span className="font-semibold">Generated Python</span>
+          <span className="ml-2 text-[11px] text-base-content/50 font-mono">
+            runs locally · uses your API key
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={copy} className="btn btn-sm btn-ghost rounded-md">
+            Copy
+          </button>
+          <button onClick={download} className="btn btn-sm btn-primary rounded-md">
+            Download .py
+          </button>
+        </div>
+      </div>
+      <pre className="text-[11px] leading-relaxed font-mono p-5 overflow-x-auto max-h-[32rem] bg-base-100/60">
+        <code>{code}</code>
+      </pre>
+      <div className="px-5 py-3 border-t border-base-300/60 text-[11px] text-base-content/50 leading-relaxed">
+        Tip: this is the backtest-mode equivalent of the website Run.
+        Same engine, same fee model. Swap the snapshot fetch loop for
+        the live WebSocket stream to turn this into a paper or live
+        bot — see <span className="font-mono">/docs/live-bot</span> when
+        ready.
+      </div>
+    </section>
+  );
+}
+
+function stripGroupIds(g: Group): CodegenGroup {
+  return {
+    op: g.op,
+    children: g.children.map((c) => (isGroup(c) ? stripGroupIds(c) : stripLeafId(c))),
+    connectors: g.connectors,
+  };
+}
+
+function stripLeafId(c: Condition): Omit<Condition, "id"> {
+  const { id: _id, ...rest } = c;
+  return rest;
 }
 
 /* ─── Helpers ────────────────────────────────────────────────────── */

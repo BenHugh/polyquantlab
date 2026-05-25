@@ -36,7 +36,7 @@ from typing import Any
 
 import asyncpg
 from clickhouse_connect.driver.asyncclient import AsyncClient
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 
 from arq import create_pool
@@ -1225,6 +1225,152 @@ class BacktestRequest(BaseModel):
     since: datetime | None = None
     until: datetime | None = None
     market_limit: int = Field(default=50, le=500)
+
+
+@app.websocket("/v1/stream")
+async def stream_snapshots(websocket: WebSocket) -> None:
+    """Live orderbook snapshot stream — push every new row that hits
+    ClickHouse, filtered by the user's `ticker` and `event_type`.
+
+    Why polling-over-WS instead of true push: keeps the API process
+    decoupled from the collector. Collector writes to ClickHouse; we
+    poll for new rows every ~1 s. Latency is ~1-3 s end-to-end, which
+    matches what the underlying Polymarket WS rate-limits anyway (8
+    snapshots/sec/market). A future Redis pub/sub upgrade can drop
+    this to <100 ms when users actually need it.
+
+    Auth: `?api_key=...` query param (websockets don't reliably carry
+    custom Authorization headers across proxies; query is the
+    standard escape hatch).  The internal-secret bypass (`?token=...`
+    matching INTERNAL_API_SECRET) also works — used by the dashboard
+    Live Terminal upgrade path.
+
+    Filters:
+      ticker      BTC | ETH | SOL  (required)
+      event_type  5m | 15m | 1h | 4h | daily_up_down  (optional)
+    """
+    # Accept early so we can negotiate auth via close codes.
+    await websocket.accept()
+
+    qp = dict(websocket.query_params)
+    ticker = (qp.get("ticker") or "").upper().strip()
+    event_type = qp.get("event_type")
+    api_key = qp.get("api_key")
+    internal_token = qp.get("token")
+
+    if ticker not in ("BTC", "ETH", "SOL"):
+        await websocket.close(code=1008, reason="ticker must be BTC/ETH/SOL")
+        return
+
+    pool: asyncpg.Pool = websocket.app.state.pg
+    ch: AsyncClient = websocket.app.state.ch
+
+    # Auth — either valid API key OR matching internal secret.
+    settings = get_settings()
+    authed = False
+    api_key_id: Any = None
+    if internal_token and internal_token == settings.internal_api_secret:
+        authed = True
+        api_key_id = "__internal__"
+    elif api_key:
+        rec = await lookup_api_key(pool, api_key)
+        if rec is not None:
+            authed = True
+            api_key_id = rec["api_key_id"]
+    if not authed:
+        await websocket.close(code=1008, reason="missing or invalid api_key")
+        return
+
+    # Resolve the active market_ids matching the filter once at
+    # subscription start. Refreshed every 60 s so newly-created
+    # markets join the stream organically.
+    async def load_market_ids() -> list[str]:
+        sql = """
+            SELECT m.market_id FROM markets m
+              JOIN events  e ON e.event_id = m.event_id
+             WHERE e.ticker = $1 AND m.is_active = TRUE
+        """
+        args: list[Any] = [ticker]
+        if event_type:
+            sql += " AND e.event_type = $2"
+            args.append(event_type)
+        rows = await pool.fetch(sql, *args)
+        return [r["market_id"] for r in rows]
+
+    market_ids = await load_market_ids()
+    if not market_ids:
+        await websocket.send_json({
+            "type": "ready",
+            "warning": "no active markets match the filter — stream will fire when new ones open",
+        })
+    else:
+        await websocket.send_json({
+            "type": "ready",
+            "ticker": ticker,
+            "event_type": event_type,
+            "subscribed_market_ids": market_ids[:10],
+            "n_subscribed": len(market_ids),
+        })
+
+    # Cursor starts at "now" — clients can ask for backfill via REST.
+    last_ts = datetime.utcnow()
+    last_market_refresh = last_ts
+
+    try:
+        while True:
+            # Refresh the active-markets set every 60 s.
+            if (datetime.utcnow() - last_market_refresh).total_seconds() > 60:
+                market_ids = await load_market_ids()
+                last_market_refresh = datetime.utcnow()
+                if not market_ids:
+                    await asyncio.sleep(1.0)
+                    continue
+
+            if market_ids:
+                result = await ch.query(
+                    """
+                    SELECT market_id, ts, mid_yes, spread_yes,
+                           best_yes_bid, best_yes_ask,
+                           underlying_price
+                      FROM orderbook_snapshots
+                     WHERE market_id IN {ids:Array(String)}
+                       AND ts > {since:DateTime64(3)}
+                     ORDER BY ts ASC
+                     LIMIT 500
+                    """,
+                    parameters={"ids": market_ids, "since": last_ts},
+                )
+                if result.result_rows:
+                    payload = []
+                    for r in result.result_rows:
+                        payload.append({
+                            "market_id": r[0],
+                            "ts": r[1].isoformat(),
+                            "mid_yes": float(r[2]) if r[2] is not None else None,
+                            "spread_yes": float(r[3]) if r[3] is not None else None,
+                            "best_yes_bid": float(r[4]) if r[4] is not None else None,
+                            "best_yes_ask": float(r[5]) if r[5] is not None else None,
+                            "underlying_price": float(r[6]) if r[6] is not None else None,
+                        })
+                        if r[1] > last_ts:
+                            last_ts = r[1]
+                    await websocket.send_json({
+                        "type": "snapshots",
+                        "count": len(payload),
+                        "rows": payload,
+                    })
+
+            # Heartbeat — keep proxies and tcp middleboxes happy.
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        # Client closed cleanly — nothing to do.
+        return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ws_stream_error", error=str(exc), api_key_id=str(api_key_id))
+        try:
+            await websocket.close(code=1011, reason=f"server error: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @app.post("/v1/backtest")

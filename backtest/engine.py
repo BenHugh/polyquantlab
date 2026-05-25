@@ -25,12 +25,53 @@ from backtest.data_loader import (
     load_resolution,
     load_snapshots,
 )
+import hashlib
+
 from backtest.slippage import (
     platform_fee,
     settlement_payoff,
     walk_book,
     walk_book_to_sell_shares,
 )
+
+
+def _apply_resolution_risk(
+    market_id: str,
+    original_yes_price: float,
+    dispute_pct: float,
+    na_pct: float,
+    dispute_payoff_pct: float,
+    random_seed: int,
+) -> tuple[float, str]:
+    """Stochastically perturb the resolved YES price to model UMA dispute
+    risk and N/A outcomes.
+
+    Background: Polymarket resolves via UMA, which can (1) take hours-
+    days to finalise, (2) be disputed (~5% historically on contested
+    markets), or (3) resolve N/A (~2%) for ambiguous claims. A vanilla
+    backtest assumes a clean settlement at 1.0 or 0.0 — that's wrong on
+    the tail and can hide strategies that look great in theory but die
+    on disputed markets.
+
+    Determinism: we seed the per-market RNG with sha256(seed || market_id)
+    so the same backtest run twice gives identical numbers. Without
+    determinism the user would never trust a sweep result that's
+    re-fired to check.
+
+    Returns (modified_yes_price, label) where label is "resolved" |
+    "disputed" | "na" — the engine doesn't use the label but the UI
+    can render a small icon per trade in a future iteration.
+    """
+    if dispute_pct <= 0 and na_pct <= 0:
+        return original_yes_price, "resolved"
+    digest = hashlib.sha256(f"{random_seed}:{market_id}".encode()).digest()
+    rng_val = int.from_bytes(digest[:8], "big") / (2 ** 64)
+    if rng_val < dispute_pct:
+        return dispute_payoff_pct, "disputed"
+    if rng_val < dispute_pct + na_pct:
+        # Half-refund — matches UMA's "p1 cannot be determined" outcome.
+        return 0.5, "na"
+    return original_yes_price, "resolved"
 from backtest.strategies import build_strategy
 from backtest.types import (
     BacktestResult,
@@ -382,6 +423,10 @@ async def _process_one_market(
     sem: asyncio.Semaphore,
     fill_mode: str = "walk_book",
     max_fill_price: float = 1.0,
+    dispute_pct: float = 0.0,
+    na_pct: float = 0.0,
+    dispute_payoff_pct: float = 0.5,
+    random_seed: int = 42,
 ) -> tuple[list[Trade], float, float] | None:
     """Load + replay one market under the global concurrency cap.
 
@@ -418,11 +463,16 @@ async def _process_one_market(
             )
             if not snapshots:
                 return None
+            resolved_yes_price, _outcome_label = _apply_resolution_risk(
+                market_id,
+                resolution.outcome_yes_price,
+                dispute_pct, na_pct, dispute_payoff_pct, random_seed,
+            )
             trades, pnl, fees = _replay_single_market(
                 snapshots,
                 strategy,
                 market["resolution_at"],
-                resolution.outcome_yes_price,
+                resolved_yes_price,
                 fill_mode=fill_mode,
                 max_fill_price=max_fill_price,
             )
@@ -449,14 +499,15 @@ async def run_backtest(
     `_BACKTEST_CONCURRENCY`). After all complete we sort trades into
     chronological order so the frontend equity curve renders correctly.
     """
-    # Pull fill-mode + max-fill-price off the spec before handing it to
-    # build_strategy — they're execution params, not strategy params.
-    # Defaults: walk_book (realistic) + 1.0 (no ceiling). Mid-fill is
-    # documented in the UI as "optimistic / matches PolyBackTest".
+    # Pull engine-level (vs strategy-level) params off the spec before
+    # build_strategy. Defaults are conservative: walk_book + no ceiling
+    # + zero dispute risk so legacy strategies are unaffected.
+    EXECUTION_PARAMS = {
+        "fill_mode", "max_fill_price",
+        "dispute_pct", "na_pct", "dispute_payoff_pct", "random_seed",
+    }
     spec_for_strategy = {
-        k: v
-        for k, v in strategy_spec.items()
-        if k not in ("fill_mode", "max_fill_price")
+        k: v for k, v in strategy_spec.items() if k not in EXECUTION_PARAMS
     }
     fill_mode = str(strategy_spec.get("fill_mode") or "walk_book").lower()
     if fill_mode not in ("walk_book", "mid"):
@@ -466,6 +517,25 @@ async def run_backtest(
     except (TypeError, ValueError):
         max_fill_price = 1.0
     max_fill_price = max(0.0, min(1.0, max_fill_price))
+
+    # Resolution-risk params (Phase X.3). All default to 0 = off, so
+    # existing strategies see no behaviour change.
+    try:
+        dispute_pct = max(0.0, min(1.0, float(strategy_spec.get("dispute_pct", 0))))
+    except (TypeError, ValueError):
+        dispute_pct = 0.0
+    try:
+        na_pct = max(0.0, min(1.0, float(strategy_spec.get("na_pct", 0))))
+    except (TypeError, ValueError):
+        na_pct = 0.0
+    try:
+        dispute_payoff_pct = max(0.0, min(1.0, float(strategy_spec.get("dispute_payoff_pct", 0.5))))
+    except (TypeError, ValueError):
+        dispute_payoff_pct = 0.5
+    try:
+        random_seed = int(strategy_spec.get("random_seed", 42))
+    except (TypeError, ValueError):
+        random_seed = 42
 
     strategy = build_strategy(spec_for_strategy)
     universe = await list_resolved_markets(
@@ -492,6 +562,10 @@ async def run_backtest(
                 sem=sem,
                 fill_mode=fill_mode,
                 max_fill_price=max_fill_price,
+                dispute_pct=dispute_pct,
+                na_pct=na_pct,
+                dispute_payoff_pct=dispute_payoff_pct,
+                random_seed=random_seed,
             )
             for m in universe
         ]
