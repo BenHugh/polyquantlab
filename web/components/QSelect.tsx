@@ -111,10 +111,20 @@ export default function QSelect({
     (idx: number) => {
       const opt = options[idx];
       if (!opt) return;
-      onChange(opt.value);
+      // Close BEFORE bubbling the change up. Previously this fired
+      // onChange first which under React 19's automatic batching
+      // could group setOpen(false) with the parent's resulting state
+      // updates — e.g. ConditionRow swapping the op list when the
+      // condition type changes — and the popover stayed visually
+      // open even though the controlled state flipped. Closing local
+      // state first guarantees the popover unmounts in the same
+      // commit as the value change.
       setOpen(false);
-      // Restore focus to the trigger so keyboard users continue smoothly.
-      buttonRef.current?.focus();
+      onChange(opt.value);
+      // Defer focus restoration to the next paint so the focus event
+      // doesn't race the popover-removal render and re-trigger any
+      // ancestor focus listener mid-reconciliation.
+      requestAnimationFrame(() => buttonRef.current?.focus());
     },
     [onChange, options],
   );
@@ -206,7 +216,14 @@ export default function QSelect({
                 aria-selected={isSelected}
                 data-idx={i}
                 onMouseEnter={() => setHighlight(i)}
-                onClick={() => choose(i)}
+                onClick={(e) => {
+                  // Stop the click bubbling to ancestors — defensive
+                  // against any parent click handler (e.g. an "open
+                  // edit menu" overlay on a condition row) that might
+                  // re-open this popover.
+                  e.stopPropagation();
+                  choose(i);
+                }}
                 className={`q-select-option${
                   isHighlight ? " q-select-option-highlight" : ""
                 }${isSelected ? " q-select-option-selected" : ""}`}
