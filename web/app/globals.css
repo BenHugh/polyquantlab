@@ -323,7 +323,12 @@ input[type="number"] { -moz-appearance: textfield; }
     oklch(17% 0.013 250 / 0.5));
   border-radius: 6px;
   position: relative;
-  overflow: hidden;
+  /* IMPORTANT: must be `visible` so child QSelect popovers can escape
+     the panel boundary. Previously had `overflow: hidden` for rounded
+     corners on the header/readout — but that clipped the dropdown
+     menu when it extended past the panel's bottom edge. We now round
+     those children explicitly (see .q-panel-header + .q-readout). */
+  overflow: visible;
   transition: border-color 200ms ease, background 200ms ease;
 }
 .q-panel:hover {
@@ -353,6 +358,12 @@ input[type="number"] { -moz-appearance: textfield; }
   padding: 0.625rem 1rem;
   border-bottom: 1px solid oklch(28% 0.013 250 / 0.45);
   background: oklch(15% 0.013 250 / 0.45);
+  /* Explicit top corners so the header's fill conforms to the
+     panel's 6px radius now that the parent's `overflow: hidden`
+     was removed (otherwise the fill would render with square top
+     corners visible through the rounded panel border). */
+  border-top-left-radius: 5px;
+  border-top-right-radius: 5px;
 }
 
 .q-num-badge {
@@ -410,6 +421,9 @@ input[type="number"] { -moz-appearance: textfield; }
   display: flex;
   gap: 0.5rem;
   align-items: baseline;
+  /* Explicit bottom corners — see comment on .q-panel-header above. */
+  border-bottom-left-radius: 5px;
+  border-bottom-right-radius: 5px;
 }
 .q-readout::before {
   content: "›";
