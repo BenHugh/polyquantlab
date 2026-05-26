@@ -188,6 +188,28 @@ _MARKET_OPEN_CACHE: dict[str, OrderBookSnapshot] = {}
 # (paper_strategy_id, market_id) → strategy callable with persisted state
 _STRATEGY_INSTANCE_CACHE: dict[tuple[Any, str], Any] = {}
 
+# ---------------------------------------------------------------------------
+# Diagnostics (Phase AE)
+# ---------------------------------------------------------------------------
+#
+# "opened=0" in paper_cycle_done for hours doesn't tell us WHY. Three
+# possibilities collapse into the same log line:
+#   - no active strategies in the DB at all
+#   - strategies exist but their ticker / event_type filter rejects
+#     every market in the snapshot batch
+#   - filters pass but the trigger function never fires (conditions
+#     too strict, cross-state never accumulates, etc.)
+# We split each of those into its own counter and surface them on the
+# end-of-cycle log so a user can `journalctl ... | grep paper_cycle_done`
+# and immediately see which dropoff stage is the problem.
+
+# Fingerprint of the previously-seen active strategy set. When this
+# changes we emit a one-shot `paper_strategies_loaded` line listing
+# every strategy currently being evaluated — useful for confirming
+# whether a strategy actually made it into the trader process or got
+# silently filtered out by Postgres.
+_LAST_STRATEGY_FINGERPRINT: tuple = ()
+
 
 async def _market_open_for(
     ch: AsyncClient,
@@ -254,12 +276,32 @@ async def _open_positions_for_new_snapshots(
     pool: asyncpg.Pool,
     ch: AsyncClient,
     since_ts: datetime,
-) -> int:
+) -> dict[str, int]:
     """For each new snapshot in (since_ts, now), evaluate every active
     strategy and open a virtual position if it triggers.
 
-    Returns the number of positions opened this pass.
+    Returns a dict of diagnostic counters. `opened` is the number of
+    positions inserted (i.e. the metric users care about); the others
+    expose pipeline dropoff so a user with all-zero `opened` can see
+    which stage rejected everything. See the "Diagnostics" block at
+    the top of this file for the rationale.
     """
+    global _LAST_STRATEGY_FINGERPRINT
+
+    counters: dict[str, int] = {
+        "opened": 0,
+        "active_strategies": 0,
+        "snapshots_seen": 0,
+        "markets_in_batch": 0,
+        "skipped_resolved": 0,
+        "skipped_filter": 0,
+        "skipped_backfill": 0,
+        "instance_errors": 0,
+        "evaluations": 0,
+        "actions_fired": 0,
+        "fill_failed": 0,
+    }
+
     # 1. Load all active strategies. Tiny table (≤ a few hundred rows).
     strategies = await pool.fetch(
         """
@@ -269,10 +311,51 @@ async def _open_positions_for_new_snapshots(
          WHERE active = TRUE
         """
     )
+    counters["active_strategies"] = len(strategies)
+
+    # Detect a change in the active set and emit a one-shot summary
+    # ("here's the universe of strategies I am evaluating") so a user
+    # SSH'd into the VPS sees the actual roster, not just per-cycle
+    # zero-counts.
+    fingerprint = tuple(
+        sorted(
+            (
+                str(r["paper_strategy_id"]),
+                r["ticker"] or "*",
+                r["event_type"] or "*",
+            )
+            for r in strategies
+        )
+    )
+    if fingerprint != _LAST_STRATEGY_FINGERPRINT:
+        _LAST_STRATEGY_FINGERPRINT = fingerprint
+        # Per-strategy detail. Keep PII out — log only id prefix +
+        # filter + spec.type (the schema-level discriminator).
+        roster = []
+        for r in strategies:
+            spec_raw = r["strategy_spec"]
+            spec = (
+                json.loads(spec_raw)
+                if isinstance(spec_raw, str)
+                else dict(spec_raw)
+            )
+            roster.append({
+                "id": str(r["paper_strategy_id"])[:8],
+                "ticker": r["ticker"] or "*",
+                "event_type": r["event_type"] or "*",
+                "type": spec.get("type", "?"),
+                "size_usd": float(r["size_usd"]),
+            })
+        log.info(
+            "paper_strategies_loaded",
+            count=len(strategies),
+            roster=roster,
+        )
+
     if not strategies:
         # Reclaim instance-cache memory if all strategies disappeared.
         _STRATEGY_INSTANCE_CACHE.clear()
-        return 0
+        return counters
 
     # Pre-compile the parsed spec + filter ctx per active strategy. The
     # actual callable now lives in _STRATEGY_INSTANCE_CACHE keyed by
@@ -303,7 +386,7 @@ async def _open_positions_for_new_snapshots(
     for k in stale_keys:
         _STRATEGY_INSTANCE_CACHE.pop(k, None)
     if not compiled:
-        return 0
+        return counters
 
     # 2. Pull all new snapshots in one ClickHouse round-trip. We grab
     # the market metadata we need (ticker, event_type, resolution_at)
@@ -319,14 +402,16 @@ async def _open_positions_for_new_snapshots(
         """,
         parameters={"since": since_ts},
     )
+    counters["snapshots_seen"] = len(snapshot_rows.result_rows)
     if not snapshot_rows.result_rows:
-        return 0
+        return counters
 
     # 3. Fetch the metadata for each market touched in this batch — one
     # Postgres query. We only need market_id → (ticker, event_type,
     # resolution_at). For most paper-trading scenarios this is < 50
     # markets.
     market_ids = sorted({r[0] for r in snapshot_rows.result_rows})
+    counters["markets_in_batch"] = len(market_ids)
     meta_rows = await pool.fetch(
         """
         SELECT m.market_id, e.ticker, e.event_type, e.resolution_at,
@@ -350,13 +435,13 @@ async def _open_positions_for_new_snapshots(
     # 4. For each snapshot × strategy, check filter compatibility and
     # try the trigger. The double-loop is small in practice (a handful
     # of strategies × ~500 snapshots/cycle).
-    opened = 0
     for row in snapshot_rows.result_rows:
         market_id = row[0]
         m_meta = meta.get(market_id)
         if not m_meta:
             continue  # market not in events table (shouldn't happen)
         if m_meta["resolved_at"] is not None:
+            counters["skipped_resolved"] += 1
             continue  # already resolved — settlement loop handles it
         snap = _row_to_snapshot(row, ticker=m_meta["ticker"])
 
@@ -371,12 +456,15 @@ async def _open_positions_for_new_snapshots(
             # Filter: only consider markets matching this strategy's
             # ticker / event_type filters.
             if ctx["ticker"] and ctx["ticker"] != m_meta["ticker"]:
+                counters["skipped_filter"] += 1
                 continue
             if ctx["event_type"] and ctx["event_type"] != m_meta["event_type"]:
+                counters["skipped_filter"] += 1
                 continue
             # Don't backfill — only consider markets/snapshots that
             # arrived AFTER the strategy was created.
             if snap.ts < ctx["started_at"]:
+                counters["skipped_backfill"] += 1
                 continue
             # Strategy size overrides the spec's own size_usd so the
             # user's slider is the source of truth.
@@ -387,7 +475,9 @@ async def _open_positions_for_new_snapshots(
                     ctx["paper_strategy_id"], market_id, spec_copy,
                 )
             except Exception:  # noqa: BLE001
+                counters["instance_errors"] += 1
                 continue
+            counters["evaluations"] += 1
             action = _evaluate_one(
                 trigger_fn, snap,
                 resolution_at=m_meta["resolution_at"],
@@ -395,9 +485,11 @@ async def _open_positions_for_new_snapshots(
             )
             if action is None:
                 continue
+            counters["actions_fired"] += 1
             side, size_usd = action
             fill = walk_book(snap, side, size_usd)
             if fill is None:
+                counters["fill_failed"] += 1
                 continue
             avg_price, filled_usd, slippage_bps = fill
             # Price-dependent fee — same formula as the backtest engine.
@@ -419,9 +511,9 @@ async def _open_positions_for_new_snapshots(
                 ),
             )
             if inserted:
-                opened += 1
+                counters["opened"] += 1
 
-    return opened
+    return counters
 
 
 # ---------------------------------------------------------------------------
@@ -490,14 +582,28 @@ async def run_paper_trader_forever(
     while not stop_event.is_set():
         cycle_start = datetime.now(tz=timezone.utc)
         try:
-            opened = await _open_positions_for_new_snapshots(
+            counters = await _open_positions_for_new_snapshots(
                 pool, ch, since_ts=last_snapshot_ts
             )
             settled = await _settle_newly_resolved(pool, since_ts=last_settle_ts)
+            # Surface every dropoff counter — see "Diagnostics" comment
+            # at the top of this file. A user grepping `paper_cycle_done`
+            # can now tell which pipeline stage rejected everything when
+            # `opened=0` persists for hours.
             log.info(
                 "paper_cycle_done",
-                opened=opened,
+                opened=counters["opened"],
                 settled=settled,
+                active=counters["active_strategies"],
+                snaps=counters["snapshots_seen"],
+                mkts=counters["markets_in_batch"],
+                skip_resolved=counters["skipped_resolved"],
+                skip_filter=counters["skipped_filter"],
+                skip_backfill=counters["skipped_backfill"],
+                evals=counters["evaluations"],
+                fired=counters["actions_fired"],
+                fill_fail=counters["fill_failed"],
+                inst_err=counters["instance_errors"],
                 window_s=PAPER_POLL_INTERVAL_S,
             )
         except Exception as exc:  # noqa: BLE001
