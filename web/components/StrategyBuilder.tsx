@@ -18,6 +18,13 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import toast from "react-hot-toast";
+import {
+  ArrowUpDown,
+  Filter,
+  Settings2,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 import QSelect from "@/components/QSelect";
 import { generatePython, type CodegenGroup, type CodegenSpec } from "@/libs/pythonCodegen";
 
@@ -1208,6 +1215,8 @@ export default function StrategyBuilder() {
         n="01"
         title="Setup"
         subtitle="Pick the universe and bet size"
+        icon={<Settings2 size={16} strokeWidth={2} />}
+        accent="text-info"
       >
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Field label="Coin">
@@ -1248,29 +1257,35 @@ export default function StrategyBuilder() {
               title="More markets = wider time window = better regime mix. 50 markets of 5m = ~4 hours; 200 = ~16 hours."
             />
           </Field>
-          <Field label="Position size ($)">
-            <input
-              type="number"
-              min={1}
-              step={1}
-              className="input input-sm input-bordered w-full"
-              value={state.sizeUsd}
-              onChange={(e) =>
-                update("sizeUsd", parseFloat(e.target.value) || 0)
-              }
-            />
+          <Field label="Position size">
+            <div className="q-affix">
+              <span className="q-affix-pre">$</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                className="q-affix-input"
+                value={state.sizeUsd}
+                onChange={(e) =>
+                  update("sizeUsd", parseFloat(e.target.value) || 0)
+                }
+              />
+            </div>
           </Field>
           <Field label="Trades / market">
-            <input
-              type="number"
-              min={1}
-              max={10}
-              className="input input-sm input-bordered w-full"
-              value={state.maxTradesPerMarket}
-              onChange={(e) =>
-                update("maxTradesPerMarket", parseInt(e.target.value, 10) || 1)
-              }
-            />
+            <div className="q-affix">
+              <input
+                type="number"
+                min={1}
+                max={10}
+                className="q-affix-input"
+                value={state.maxTradesPerMarket}
+                onChange={(e) =>
+                  update("maxTradesPerMarket", parseInt(e.target.value, 10) || 1)
+                }
+              />
+              <span className="q-affix-post">trades</span>
+            </div>
           </Field>
           <Field label="Fill mode">
             <QSelect
@@ -1324,19 +1339,22 @@ export default function StrategyBuilder() {
                   title="Cents below best ask to post your limit order. Wider = less likely to fill but better price if it does."
                 />
               </Field>
-              <Field label={`Timeout · ${state.limitTimeoutS}s`}>
-                <input
-                  type="number"
-                  min={1}
-                  max={3600}
-                  step={5}
-                  className="input input-sm input-bordered w-full"
-                  value={state.limitTimeoutS}
-                  onChange={(e) =>
-                    update("limitTimeoutS", parseInt(e.target.value, 10) || 60)
-                  }
-                  title="Cancel and skip the entry if the limit hasn't filled in this many seconds."
-                />
+              <Field label="Timeout">
+                <div className="q-affix">
+                  <input
+                    type="number"
+                    min={1}
+                    max={3600}
+                    step={5}
+                    className="q-affix-input"
+                    value={state.limitTimeoutS}
+                    onChange={(e) =>
+                      update("limitTimeoutS", parseInt(e.target.value, 10) || 60)
+                    }
+                    title="Cancel and skip the entry if the limit hasn't filled in this many seconds."
+                  />
+                  <span className="q-affix-post">s</span>
+                </div>
               </Field>
               <Field label="Queue-aware fills">
                 <label className="flex items-center gap-2 cursor-pointer p-2 rounded border border-base-300/60 bg-base-200/30 hover:bg-base-200/60 transition-colors">
@@ -1457,6 +1475,8 @@ export default function StrategyBuilder() {
         n="02"
         title="Entry Conditions"
         subtitle="When should we look for a trade?"
+        icon={<Filter size={16} strokeWidth={2} />}
+        accent="text-warning"
         readsAs={`Enter when ${readsAs.entryEn}.`}
       >
         <ConditionGroup
@@ -1475,6 +1495,8 @@ export default function StrategyBuilder() {
         n="03"
         title="Trade Logic"
         subtitle="Buy UP or DOWN token?"
+        icon={<ArrowUpDown size={16} strokeWidth={2} />}
+        accent="text-secondary"
         readsAs={`Every trade buys the ${readsAs.dir} token.`}
       >
         <div className="max-w-xs">
@@ -1493,6 +1515,8 @@ export default function StrategyBuilder() {
         n="04"
         title="Take Profit"
         subtitle="Exit when conditions match (winning side)"
+        icon={<TrendingUp size={16} strokeWidth={2} />}
+        accent="text-success"
         readsAs={
           readsAs.tpEn ? `Exit on profit when ${readsAs.tpEn}.` : null
         }
@@ -1514,6 +1538,8 @@ export default function StrategyBuilder() {
         n="05"
         title="Stop Loss"
         subtitle="Exit when conditions match (losing side)"
+        icon={<TrendingDown size={16} strokeWidth={2} />}
+        accent="text-error"
         readsAs={
           readsAs.slEn ? `Exit on loss when ${readsAs.slEn}.` : null
         }
@@ -1592,6 +1618,8 @@ function Section({
   n,
   title,
   subtitle,
+  icon,
+  accent = "text-primary",
   children,
   readsAs,
   emptyHint,
@@ -1599,21 +1627,33 @@ function Section({
   n: string;
   title: string;
   subtitle: string;
+  /** Lucide icon, e.g. <Settings2 size={16} strokeWidth={2} /> */
+  icon?: ReactNode;
+  /** Tailwind color class for the icon: text-info, text-warning, text-success, text-error, ... */
+  accent?: string;
   children: ReactNode;
   readsAs?: string | null;
   emptyHint?: string;
 }) {
-  // Pro-quant panel — see `.q-panel` block in globals.css. Sharper corners,
-  // hairline border + a tiny left-accent strip that lights up on focus-within,
-  // mono section-number badge à la Bloomberg field references.
+  // Pro-quant panel — see `.q-panel` block in globals.css. Icon-accented
+  // header per PolySimulator reference: a small stroke icon in a section-
+  // specific colour, followed by the title; the numeric badge moves
+  // into the subtitle slot to free up visual weight.
   return (
     <section className="q-panel">
       <header className="q-panel-header">
-        <div className="flex items-center gap-2.5">
-          <span className="q-num-badge">{n}</span>
-          <h3 className="q-section-title">{title}</h3>
+        <div className="flex items-center gap-2.5 min-w-0">
+          {icon && (
+            <span className={`shrink-0 ${accent}`} aria-hidden>
+              {icon}
+            </span>
+          )}
+          <h3 className="q-section-title truncate">{title}</h3>
         </div>
-        <span className="q-section-subtitle">{subtitle}</span>
+        <span className="q-section-subtitle flex items-center gap-2 shrink-0">
+          <span className="q-num-badge-mini">{n}</span>
+          <span className="hidden sm:inline">{subtitle}</span>
+        </span>
       </header>
       <div className="p-5 space-y-3">{children}</div>
       {(readsAs || emptyHint) && (

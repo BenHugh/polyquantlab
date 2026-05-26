@@ -3,6 +3,12 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import toast from "react-hot-toast";
+import {
+  ChartScatter,
+  Globe2,
+  Grid3x3,
+  Settings2,
+} from "lucide-react";
 import QSelect from "@/components/QSelect";
 
 /**
@@ -210,11 +216,16 @@ export default function SweepForm({
       {/* Universe */}
       <section className="q-panel">
         <header className="q-panel-header">
-          <div className="flex items-center gap-2.5">
-            <span className="q-num-badge">S1</span>
-            <h3 className="q-section-title">Universe</h3>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="shrink-0 text-info" aria-hidden>
+              <Globe2 size={16} strokeWidth={2} />
+            </span>
+            <h3 className="q-section-title truncate">Universe</h3>
           </div>
-          <span className="q-section-subtitle">market scope</span>
+          <span className="q-section-subtitle flex items-center gap-2 shrink-0">
+            <span className="q-num-badge-mini">S1</span>
+            <span className="hidden sm:inline">market scope</span>
+          </span>
         </header>
         <div className="p-5 grid grid-cols-2 gap-4">
           <label className="block">
@@ -227,18 +238,21 @@ export default function SweepForm({
           </label>
           <label className="block">
             <span className="q-label">Market limit · max {maxMarketLimit}</span>
-            <input
-              type="number"
-              className="input input-sm input-bordered w-full"
-              min={1}
-              max={maxMarketLimit}
-              value={marketLimit}
-              onChange={(e) =>
-                setMarketLimit(
-                  Math.min(Math.max(parseInt(e.target.value) || 1, 1), maxMarketLimit)
-                )
-              }
-            />
+            <div className="q-affix">
+              <input
+                type="number"
+                className="q-affix-input"
+                min={1}
+                max={maxMarketLimit}
+                value={marketLimit}
+                onChange={(e) =>
+                  setMarketLimit(
+                    Math.min(Math.max(parseInt(e.target.value) || 1, 1), maxMarketLimit)
+                  )
+                }
+              />
+              <span className="q-affix-post">markets</span>
+            </div>
           </label>
         </div>
       </section>
@@ -246,11 +260,16 @@ export default function SweepForm({
       {/* Strategy + pinned params */}
       <section className="q-panel">
         <header className="q-panel-header">
-          <div className="flex items-center gap-2.5">
-            <span className="q-num-badge">S2</span>
-            <h3 className="q-section-title">Strategy · pinned values</h3>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="shrink-0 text-secondary" aria-hidden>
+              <Settings2 size={16} strokeWidth={2} />
+            </span>
+            <h3 className="q-section-title truncate">Strategy · pinned values</h3>
           </div>
-          <span className="q-section-subtitle">params not swept</span>
+          <span className="q-section-subtitle flex items-center gap-2 shrink-0">
+            <span className="q-num-badge-mini">S2</span>
+            <span className="hidden sm:inline">params not swept</span>
+          </span>
         </header>
         <div className="p-5 space-y-3">
         <label className="block">
@@ -315,11 +334,16 @@ export default function SweepForm({
       {/* X axis */}
       <section className="q-panel">
         <header className="q-panel-header">
-          <div className="flex items-center gap-2.5">
-            <span className="q-num-badge">X</span>
-            <h3 className="q-section-title">X axis · sweep this</h3>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="shrink-0 text-warning" aria-hidden>
+              <ChartScatter size={16} strokeWidth={2} />
+            </span>
+            <h3 className="q-section-title truncate">X axis · sweep this</h3>
           </div>
-          <span className="q-section-subtitle">primary dimension</span>
+          <span className="q-section-subtitle flex items-center gap-2 shrink-0">
+            <span className="q-num-badge-mini">X</span>
+            <span className="hidden sm:inline">primary dimension</span>
+          </span>
         </header>
         <div className="p-5">
           <AxisFieldset
@@ -333,11 +357,13 @@ export default function SweepForm({
       {/* Y axis */}
       <section className="q-panel">
         <header className="q-panel-header">
-          <div className="flex items-center gap-2.5">
-            <span className="q-num-badge">Y</span>
-            <h3 className="q-section-title">Y axis · 2D sweep</h3>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="shrink-0 text-success" aria-hidden>
+              <Grid3x3 size={16} strokeWidth={2} />
+            </span>
+            <h3 className="q-section-title truncate">Y axis · 2D sweep</h3>
           </div>
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2 cursor-pointer shrink-0">
             <input
               type="checkbox"
               className="checkbox checkbox-xs checkbox-accent"
