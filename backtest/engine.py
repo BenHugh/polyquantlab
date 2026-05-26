@@ -35,6 +35,20 @@ from backtest.slippage import (
 )
 
 
+# Spec keys that are engine-level execution params, NOT strategy-class
+# constructor kwargs. Anything in this set must be stripped from the
+# spec dict before passing to build_strategy() — otherwise the strategy
+# __init__ raises TypeError on unexpected kwargs (e.g.
+# ConditionBasedStrategy doesn't accept fill_mode). Exposed at module
+# scope so paper_trader.py can share the same authoritative list.
+EXECUTION_PARAMS: frozenset[str] = frozenset({
+    "fill_mode", "max_fill_price",
+    "dispute_pct", "na_pct", "dispute_payoff_pct", "random_seed",
+    "order_type", "limit_offset_cents", "limit_timeout_s",
+    "queue_aware",
+})
+
+
 def _apply_resolution_risk(
     market_id: str,
     original_yes_price: float,
@@ -660,14 +674,10 @@ async def run_backtest(
     chronological order so the frontend equity curve renders correctly.
     """
     # Pull engine-level (vs strategy-level) params off the spec before
-    # build_strategy. Defaults are conservative: walk_book + no ceiling
-    # + zero dispute risk so legacy strategies are unaffected.
-    EXECUTION_PARAMS = {
-        "fill_mode", "max_fill_price",
-        "dispute_pct", "na_pct", "dispute_payoff_pct", "random_seed",
-        "order_type", "limit_offset_cents", "limit_timeout_s",
-        "queue_aware",
-    }
+    # build_strategy. EXECUTION_PARAMS is module-level so paper_trader
+    # can use the same authoritative list. Defaults are conservative:
+    # walk_book + no ceiling + zero dispute risk so legacy strategies
+    # are unaffected.
     spec_for_strategy = {
         k: v for k, v in strategy_spec.items() if k not in EXECUTION_PARAMS
     }

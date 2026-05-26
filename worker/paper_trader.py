@@ -44,6 +44,7 @@ import asyncpg
 from clickhouse_connect.driver.asyncclient import AsyncClient
 
 from api import paper_db
+from backtest.engine import EXECUTION_PARAMS
 from backtest.slippage import platform_fee, walk_book
 from backtest.strategies import build_strategy
 from backtest.types import OrderBookLevel, OrderBookSnapshot, Side
@@ -256,7 +257,17 @@ def _get_strategy_instance(
     existing = _STRATEGY_INSTANCE_CACHE.get(key)
     if existing is not None:
         return existing
-    fn = build_strategy(spec_copy)
+    # Mirror what backtest/engine.py does: strip execution-level keys
+    # (fill_mode, max_fill_price, order_type, queue_aware, …) from the
+    # spec before passing it to build_strategy(). Without this,
+    # ConditionBasedStrategy.__init__ raises TypeError for "unexpected
+    # keyword argument 'fill_mode'" and every cycle silently fails to
+    # evaluate. This was the actual root cause of the 22h
+    # opened=0 / evals=0 / inst_err every cycle observation.
+    spec_for_strategy = {
+        k: v for k, v in spec_copy.items() if k not in EXECUTION_PARAMS
+    }
+    fn = build_strategy(spec_for_strategy)
     reset = getattr(fn, "reset_market_state", None)
     if callable(reset):
         reset()
