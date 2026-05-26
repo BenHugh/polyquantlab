@@ -211,7 +211,7 @@ export default function QSelect({
                   isHighlight ? " q-select-option-highlight" : ""
                 }${isSelected ? " q-select-option-selected" : ""}`}
               >
-                <span className="truncate">{o.label}</span>
+                <span>{o.label}</span>
                 {o.hint && (
                   <span className="q-select-option-hint">{o.hint}</span>
                 )}

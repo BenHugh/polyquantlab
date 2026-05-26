@@ -1816,7 +1816,7 @@ function ConditionRow({
         {index}
       </span>
 
-      <div className="min-w-0 flex-1 max-w-[10rem]">
+      <div className="min-w-0 flex-1 max-w-[14rem]">
         <QSelect
           size="xs"
           value={c.type}

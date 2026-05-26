@@ -535,7 +535,14 @@ input[type="number"] { -moz-appearance: textfield; }
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  right: 0;
+  /* Width grows to fit the longest option label, but is always at
+     least as wide as the trigger. This is the "Bloomberg-style"
+     compact-trigger / full-expansion pattern — closed shows a short
+     truncated label, opened shows the full text for every option so
+     a user can actually read what they're picking from. */
+  width: max-content;
+  min-width: 100%;
+  max-width: 22rem;
   z-index: 50;
   max-height: 280px;
   overflow-y: auto;
@@ -570,7 +577,13 @@ input[type="number"] { -moz-appearance: textfield; }
   border-radius: 4px;
   text-align: left;
   cursor: pointer;
+  white-space: nowrap;  /* keep each option on a single line */
   transition: background 90ms ease, color 90ms ease;
+}
+.q-select-option > span:first-child {
+  /* Don't truncate option labels — the popover width grows to fit them */
+  overflow: visible;
+  text-overflow: clip;
 }
 .q-select-option-highlight {
   background: oklch(40% 0.15 240 / 0.22);
