@@ -19,6 +19,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Radio, TrendingDown, TrendingUp } from "lucide-react";
+import CoinIcon from "@/components/CoinIcon";
 
 type Ticker = "BTC" | "ETH" | "SOL";
 
@@ -191,10 +193,11 @@ export default function LiveTerminal() {
             <button
               key={t}
               onClick={() => setTicker(t)}
-              className={`join-item btn btn-sm ${
+              className={`join-item btn btn-sm gap-2 ${
                 ticker === t ? "btn-primary" : "btn-ghost"
               }`}
             >
+              <CoinIcon ticker={t} size={16} />
               {t}
             </button>
           ))}
@@ -390,6 +393,10 @@ function SideBlock({
   tone: "primary" | "error";
 }) {
   const accent = tone === "primary" ? "text-primary" : "text-error";
+  // Direction glyph — TrendingUp for the YES/UP side, TrendingDown for
+  // the NO/DOWN side. Inherits the tone colour so the icon reads as
+  // part of the label.
+  const DirIcon = tone === "primary" ? TrendingUp : TrendingDown;
   // Headline preference: a recent trade (last 60 s) is the truest signal
   // of where the market is actually transacting. Mid-of-book is a
   // mathematical artifact when the book is wide (stale far-edge orders
@@ -401,7 +408,8 @@ function SideBlock({
   return (
     <div className="p-4">
       <div className="flex items-baseline justify-between mb-2">
-        <span className={`text-[10px] font-mono uppercase tracking-widest ${accent}`}>
+        <span className={`flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest ${accent}`}>
+          <DirIcon size={11} strokeWidth={2.25} aria-hidden />
           {label} token
         </span>
         <span

@@ -8,6 +8,7 @@ import { Crisp } from "crisp-sdk-web";
 import NextTopLoader from "nextjs-toploader";
 import { Toaster } from "react-hot-toast";
 import { Tooltip } from "react-tooltip";
+import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 import config from "@/config";
 
 // Crisp customer chat support:
@@ -75,10 +76,56 @@ const ClientLayout = ({ children }: { children: ReactNode }) => {
       {/* Content inside app/page.js files  */}
       {children}
 
-      {/* Show Success/Error messages anywhere from the app with toast() */}
+      {/* Show Success/Error messages anywhere from the app with toast().
+       *
+       * Phase AD: swap default emoji-style icons for crisp lucide
+       * strokes that match the rest of the app. Also tighten the
+       * default styling — flatter background, hairline border, mono
+       * font + smaller padding so a toast looks like a quant terminal
+       * notification rather than a marketing alert. */}
       <Toaster
+        position="bottom-right"
         toastOptions={{
           duration: 3000,
+          style: {
+            background: "oklch(13% 0.012 250)",
+            color: "oklch(94% 0.005 250)",
+            border: "1px solid oklch(28% 0.013 250 / 0.85)",
+            fontFamily: "var(--font-display, Inter), system-ui, sans-serif",
+            fontSize: "13px",
+            padding: "10px 14px",
+            borderRadius: "6px",
+            boxShadow:
+              "0 1px 0 0 oklch(100% 0 0 / 0.05) inset, 0 18px 40px -12px oklch(0% 0 0 / 0.55)",
+          },
+          success: {
+            icon: (
+              <CheckCircle2
+                size={16}
+                strokeWidth={2}
+                color="oklch(72% 0.18 150)"
+              />
+            ),
+          },
+          error: {
+            icon: (
+              <XCircle
+                size={16}
+                strokeWidth={2}
+                color="oklch(65% 0.22 25)"
+              />
+            ),
+          },
+          loading: {
+            icon: (
+              <Loader2
+                size={16}
+                strokeWidth={2}
+                color="oklch(70% 0.005 250 / 0.8)"
+                className="animate-spin"
+              />
+            ),
+          },
         }}
       />
 

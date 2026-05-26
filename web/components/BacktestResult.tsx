@@ -3,7 +3,21 @@
 import ExportButtons from "@/components/ExportButtons";
 import { formatDateTime } from "@/libs/formatDate";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  Activity,
+  ArrowDownRight,
+  ArrowUpRight,
+  BarChart3,
+  DollarSign,
+  Globe2,
+  Hash,
+  Receipt,
+  Scale,
+  Sigma,
+  Target,
+  Trophy,
+} from "lucide-react";
 
 /**
  * Poll FastAPI's job_store via /api/backtest/[id] until terminal.
@@ -288,26 +302,39 @@ function StatsGrid({ result }: { result: BacktestResultBody }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat
           label="Total PnL"
+          icon={<DollarSign size={13} strokeWidth={2} />}
           value={`$${result.total_pnl.toFixed(2)}`}
           accent={result.total_pnl >= 0 ? "success" : "error"}
         />
-        <Stat label="Fees" value={`$${result.total_fees.toFixed(2)}`} />
+        <Stat
+          label="Fees"
+          icon={<Receipt size={13} strokeWidth={2} />}
+          value={`$${result.total_fees.toFixed(2)}`}
+        />
         <Stat
           label="Win rate"
+          icon={<Target size={13} strokeWidth={2} />}
           value={`${(result.win_rate * 100).toFixed(1)}%`}
         />
         <Stat
           label="Sharpe"
+          icon={<Sigma size={13} strokeWidth={2} />}
           value={result.sharpe != null ? result.sharpe.toFixed(2) : "—"}
         />
         <Stat
           label="Max drawdown"
+          icon={<ArrowUpRight size={13} strokeWidth={2} className="rotate-180" />}
           value={`$${result.max_drawdown.toFixed(2)}`}
           accent={result.max_drawdown > 0 ? "error" : undefined}
         />
-        <Stat label="Trades" value={result.n_trades.toString()} />
+        <Stat
+          label="Trades"
+          icon={<Hash size={13} strokeWidth={2} />}
+          value={result.n_trades.toString()}
+        />
         <Stat
           label="PnL / trade"
+          icon={<Activity size={13} strokeWidth={2} />}
           value={
             result.n_trades > 0
               ? `$${(result.total_pnl / result.n_trades).toFixed(2)}`
@@ -316,6 +343,7 @@ function StatsGrid({ result }: { result: BacktestResultBody }) {
         />
         <Stat
           label="Profit factor"
+          icon={<Scale size={13} strokeWidth={2} />}
           value={
             profitFactor === null
               ? "—"
@@ -337,22 +365,29 @@ function StatsGrid({ result }: { result: BacktestResultBody }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
         <Stat
           label="Best trade"
+          icon={<Trophy size={13} strokeWidth={2} />}
           value={best !== null ? `+$${best.toFixed(2)}` : "—"}
           accent={best !== null && best > 0 ? "success" : undefined}
         />
         <Stat
           label="Worst trade"
+          icon={<ArrowDownRight size={13} strokeWidth={2} />}
           value={worst !== null ? `$${worst.toFixed(2)}` : "—"}
           accent={worst !== null && worst < 0 ? "error" : undefined}
         />
         <Stat
           label="Calmar"
+          icon={<BarChart3 size={13} strokeWidth={2} />}
           value={calmar !== null ? calmar.toFixed(2) : "—"}
           accent={
             calmar === null ? undefined : calmar >= 0 ? "success" : "error"
           }
         />
-        <Stat label="Markets" value={result.n_markets.toString()} />
+        <Stat
+          label="Markets"
+          icon={<Globe2 size={13} strokeWidth={2} />}
+          value={result.n_markets.toString()}
+        />
       </div>
     </>
   );
@@ -362,10 +397,12 @@ function Stat({
   label,
   value,
   accent,
+  icon,
 }: {
   label: string;
   value: string;
   accent?: "success" | "error";
+  icon?: ReactNode;
 }) {
   const color =
     accent === "success"
@@ -373,10 +410,25 @@ function Stat({
       : accent === "error"
       ? "text-error"
       : "";
+  // Icon tinted to match the value's accent — quick visual scan of the
+  // stat grid reads green=good, red=bad, neutral=informational.
+  const iconColor =
+    accent === "success"
+      ? "text-success/70"
+      : accent === "error"
+      ? "text-error/70"
+      : "text-base-content/40";
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-3">
-      <div className="text-xs uppercase tracking-wide opacity-60">{label}</div>
-      <div className={`font-semibold mt-1 ${color}`}>{value}</div>
+      <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide opacity-60">
+        {icon && (
+          <span className={`shrink-0 ${iconColor}`} aria-hidden>
+            {icon}
+          </span>
+        )}
+        <span>{label}</span>
+      </div>
+      <div className={`font-semibold mt-1 font-mono tabular-nums ${color}`}>{value}</div>
     </div>
   );
 }
