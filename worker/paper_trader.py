@@ -210,6 +210,14 @@ _STRATEGY_INSTANCE_CACHE: dict[tuple[Any, str], Any] = {}
 # silently filtered out by Postgres.
 _LAST_STRATEGY_FINGERPRINT: tuple = ()
 
+# Set of strategy IDs we've already logged a build-failure trace for.
+# When `build_strategy(spec)` raises for an active strategy, the first
+# occurrence dumps a full traceback + the offending spec shape so we can
+# diagnose schema drift / missing fields. Subsequent failures from the
+# same strategy are silent (already counted via `instance_errors`) — we
+# don't need 50 copies of the same trace every 5 seconds.
+_LOGGED_BUILD_FAILURES: set[Any] = set()
+
 
 async def _market_open_for(
     ch: AsyncClient,
@@ -329,6 +337,10 @@ async def _open_positions_for_new_snapshots(
     )
     if fingerprint != _LAST_STRATEGY_FINGERPRINT:
         _LAST_STRATEGY_FINGERPRINT = fingerprint
+        # Active strategy set changed → reset the once-per-strategy
+        # build-failure log gate so a re-added strategy gets a fresh
+        # traceback if it still fails.
+        _LOGGED_BUILD_FAILURES.clear()
         # Per-strategy detail. Keep PII out — log only id prefix +
         # filter + spec.type (the schema-level discriminator).
         roster = []
@@ -474,8 +486,24 @@ async def _open_positions_for_new_snapshots(
                 trigger_fn = _get_strategy_instance(
                     ctx["paper_strategy_id"], market_id, spec_copy,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as build_exc:  # noqa: BLE001
                 counters["instance_errors"] += 1
+                # First failure for this strategy gets a full traceback
+                # + the spec keys we tried to build with — enough to
+                # identify schema drift (missing field, wrong type,
+                # outdated spec.type, etc.). Subsequent failures stay
+                # silent (counter still increments) so logs don't drown.
+                if ctx["paper_strategy_id"] not in _LOGGED_BUILD_FAILURES:
+                    _LOGGED_BUILD_FAILURES.add(ctx["paper_strategy_id"])
+                    import traceback
+                    log.error(
+                        "paper_strategy_build_failed",
+                        strategy_id=str(ctx["paper_strategy_id"])[:8],
+                        spec_type=spec_copy.get("type"),
+                        spec_keys=sorted(spec_copy.keys()),
+                        error=f"{type(build_exc).__name__}: {build_exc}",
+                        traceback=traceback.format_exc()[-1500:],
+                    )
                 continue
             counters["evaluations"] += 1
             action = _evaluate_one(
