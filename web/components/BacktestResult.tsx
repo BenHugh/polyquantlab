@@ -187,24 +187,28 @@ function RunningProgress({ job, gaveUp }: { job: JobRecord; gaveUp: boolean }) {
     return () => clearInterval(id);
   }, []);
 
-  // Estimate progress: ~50ms / market on the worker (empirically measured
-  // for condition_based strategies; threshold_entry is similar). Cap at
-  // 95% until completion so we never show 100% on a still-running job.
-  // Queued = stuck at 5% (waiting for worker pickup).
-  const marketLimit = Number(
-    (job.params as Record<string, unknown>).market_limit || 50,
-  );
+  // Estimate progress. Different strategy types have very different
+  // per-market costs:
+  //   threshold_entry / mean_reversion / time_before_resolution
+  //     fast — one snapshot scan per market, ~60ms each
+  //   condition_based
+  //     slow — every snapshot evaluates the full AND/OR tree with
+  //     window stats + cross-state, empirically ~440ms each
+  // Previously this used a flat 50ms estimate which made
+  // condition_based runs hit the 95% cap in seconds and then sit
+  // there for 30-60 s, making the UI look frozen.
+  const params = job.params as Record<string, unknown>;
+  const marketLimit = Number(params.market_limit || 50);
+  const stratType =
+    (params.strategy as { type?: string } | undefined)?.type ?? "threshold_entry";
+  const perMarketMs = stratType === "condition_based" ? 500 : 80;
   // Sweeps have n_cells × markets total work
-  const xAxis = (job.params as Record<string, unknown>).x_axis as
-    | { steps?: number }
-    | undefined;
-  const yAxis = (job.params as Record<string, unknown>).y_axis as
-    | { steps?: number }
-    | undefined;
+  const xAxis = params.x_axis as { steps?: number } | undefined;
+  const yAxis = params.y_axis as { steps?: number } | undefined;
   const cellCount = xAxis?.steps
     ? xAxis.steps * (yAxis?.steps || 1)
     : 1;
-  const expectedMs = Math.max(2000, marketLimit * cellCount * 50);
+  const expectedMs = Math.max(2000, marketLimit * cellCount * perMarketMs);
 
   let pct: number;
   let label: string;
@@ -213,9 +217,17 @@ function RunningProgress({ job, gaveUp }: { job: JobRecord; gaveUp: boolean }) {
     label = "Queued — waiting for a worker…";
   } else if (job.started_at) {
     const elapsed = now - new Date(job.started_at).getTime();
-    pct = Math.min(95, (elapsed / expectedMs) * 100);
+    // Asymptotic curve instead of hard linear-then-cap. 1×expected ≈
+    // 80%, 1.5× ≈ 88%, 2× ≈ 92%, 3×+ asymptote at 95%. Means the bar
+    // keeps creeping forward even when our estimate undershoots — no
+    // more "stuck at 95% for 30 seconds" panic.
+    const ratio = elapsed / expectedMs;
+    const eased = 1 - Math.exp(-ratio * 1.6);
+    pct = Math.min(95, eased * 100);
     const remainingMs = Math.max(0, expectedMs - elapsed);
-    label = `Running… ~${Math.ceil(remainingMs / 1000)}s remaining`;
+    label = remainingMs > 1000
+      ? `Running… ~${Math.ceil(remainingMs / 1000)}s remaining`
+      : "Running… finishing up";
   } else {
     pct = 10;
     label = "Starting…";
@@ -264,10 +276,70 @@ function ResultView({
 }) {
   return (
     <div className="space-y-6">
+      {result.n_trades === 0 && <NoTradesCallout params={params} />}
       <StatsGrid result={result} />
       <PnLChart trades={result.trades} />
       <TradesTable trades={result.trades} />
       <ParamsCard params={params} />
+    </div>
+  );
+}
+
+/**
+ * Zero-trades callout — explains WHY the result is all zeros and points
+ * the user back to Strategy Builder to loosen. Previously when a strategy
+ * never fired, the page rendered all-zero stats + "Not enough trades for
+ * a chart" + an empty table, leaving the user thinking the backtest
+ * "didn't show any data" (it did — it showed an empty result).
+ */
+function NoTradesCallout({ params }: { params: Record<string, unknown> }) {
+  const marketLimit = Number(params.market_limit || 50);
+  const ticker = (params.ticker as string) || "all";
+  const eventType = (params.event_type as string) || "all";
+  return (
+    <div className="rounded-lg border border-warning/40 bg-warning/5 p-4 space-y-2">
+      <div className="flex items-center gap-2 text-warning font-semibold">
+        <span className="w-2 h-2 rounded-full bg-warning" aria-hidden />
+        <span>No trades fired</span>
+      </div>
+      <p className="text-sm text-base-content/70 leading-relaxed">
+        Across <strong>{marketLimit} {ticker} {eventType}</strong> markets, your
+        entry conditions never simultaneously matched. The backtest ran fine —
+        it just didn&apos;t find a setup to enter on. This usually means one of
+        your AND conditions is too strict for the data sample.
+      </p>
+      <details className="text-xs text-base-content/60">
+        <summary className="cursor-pointer hover:text-base-content/80 select-none">
+          How to loosen
+        </summary>
+        <ul className="mt-2 ml-4 space-y-1 list-disc">
+          <li>
+            <strong>Token price ≤ X</strong> — bump X by 0.05-0.10
+          </li>
+          <li>
+            <strong>Spread ≤ X</strong> — Polymarket books are wider than
+            equities; try 0.08-0.10
+          </li>
+          <li>
+            <strong>Coin move ≥ X%</strong> — try 0.10% instead of 0.20%+
+          </li>
+          <li>
+            <strong>Time-window conditions</strong> — widen the window to
+            capture more snapshots
+          </li>
+          <li>
+            Or change the outer group from <strong>AND</strong> to{" "}
+            <strong>OR</strong> — but only after isolating which condition
+            is the binding constraint
+          </li>
+        </ul>
+      </details>
+      <Link
+        href="/dashboard/strategy-builder"
+        className="btn btn-sm btn-warning btn-outline gap-2"
+      >
+        ← Back to Strategy Builder
+      </Link>
     </div>
   );
 }

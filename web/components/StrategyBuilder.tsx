@@ -758,17 +758,24 @@ export default function StrategyBuilder() {
 
   // -- Plain English summary (mirrors backtest/conditions.py:humanise) --
 
+  /** Format a number with its unit attached — currency is a prefix
+   * ($50), everything else is a suffix (0.2%, 1800s, 5σ). Previously
+   * everything was prefixed which produced wrong-looking output like
+   * "%0.2" and "s1800" in the Reads-as readout. */
+  function formatVal(value: number, unit: ParamSpec["unit"]): string {
+    if (unit === "usd") return `$${value}`;
+    if (unit === "percent") return `${value}%`;
+    if (unit === "seconds") return `${value}s`;
+    if (unit === "stddev") return `${value}σ`;
+    return `${value}`;
+  }
+
   function humanCondition(c: Condition): string {
     const op = OP_LABELS[c.op] || c.op;
     const spec = PARAM_SPECS[c.type];
     const sidePrefix = spec.hasSide ? `${c.side?.toUpperCase() ?? ""} ` : "";
     const windowSuffix = spec.needsWindow ? ` (${c.window_sec}s window)` : "";
-    const unit =
-      spec.unit === "usd" ? "$" :
-      spec.unit === "percent" ? "%" :
-      spec.unit === "seconds" ? "s" :
-      "";
-    return `${sidePrefix}${spec.label} ${op} ${unit}${c.value}${windowSuffix}`;
+    return `${sidePrefix}${spec.label} ${op} ${formatVal(c.value, spec.unit)}${windowSuffix}`;
   }
 
   /** Render a node tree as a flat one-line phrase. Nested groups get
@@ -785,12 +792,7 @@ export default function StrategyBuilder() {
   function leafPredicate(c: Condition): string {
     const op = OP_LABELS[c.op] || c.op;
     const spec = PARAM_SPECS[c.type];
-    const unit =
-      spec.unit === "usd" ? "$" :
-      spec.unit === "percent" ? "%" :
-      spec.unit === "seconds" ? "s" :
-      "";
-    return `${op} ${unit}${c.value}`;
+    return `${op} ${formatVal(c.value, spec.unit)}`;
   }
 
   /** Render a group's children with per-pair connectors + subject
