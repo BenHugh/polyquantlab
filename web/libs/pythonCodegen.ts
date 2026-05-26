@@ -183,7 +183,14 @@ export function generatePython(spec: CodegenSpec): string {
   const tpExpr = sectionExpr(spec.takeProfit, "False");
   const slExpr = sectionExpr(spec.stopLoss, "False");
   const side = spec.tradeLogic === "always_up" ? "Up" : "Down";
-  const sideTokenKey = side === "Up" ? "yes" : "no";
+  // The snapshot schema uses `orderbook_up` / `orderbook_down` (matching
+  // the YES/NO token but keyed by trade direction). Previously this
+  // emitted "orderbook_yes" / "orderbook_no" — those fields don't exist
+  // in the snapshot dicts, so walk_sell_book always saw an empty book
+  // and TP/SL exits silently never closed positions in the generated
+  // script. Resolution-fallback masked the bug in PnL summary, but the
+  // exit prices were wrong.
+  const obKey = side === "Up" ? "orderbook_up" : "orderbook_down";
 
   const now = new Date().toISOString();
 
@@ -476,7 +483,7 @@ async def process_market(client: httpx.AsyncClient, m: dict) -> list[dict]:
         for i in range(entry_idx + 1, len(snaps)):
             history = snaps[max(0, i - 60):i]
             if check_take_profit(snaps[i], market_open, history, resolution_at, prev_state):
-                ob_key = "orderbook_${sideTokenKey}"
+                ob_key = "${obKey}"
                 proceeds, avg, filled = walk_sell_book(snaps[i].get(ob_key) or {}, tokens)
                 if filled and avg > 0:
                     exit_price = avg
@@ -485,7 +492,7 @@ async def process_market(client: httpx.AsyncClient, m: dict) -> list[dict]:
                     scan_from = i + 1
                     break
             if check_stop_loss(snaps[i], market_open, history, resolution_at, prev_state):
-                ob_key = "orderbook_${sideTokenKey}"
+                ob_key = "${obKey}"
                 proceeds, avg, filled = walk_sell_book(snaps[i].get(ob_key) or {}, tokens)
                 if filled and avg > 0:
                     exit_price = avg
@@ -505,6 +512,11 @@ async def process_market(client: httpx.AsyncClient, m: dict) -> list[dict]:
         trades.append({
             "market_id": m["market_id"],
             "side": "${side}",
+            # Entry timestamp from the snapshot — used to sort the
+            # combined trade list across markets chronologically so
+            # the cumulative P&L summary reads in the order trades
+            # actually happened, not by entry price.
+            "entry_ts": snaps[entry_idx].get("ts"),
             "entry_price": round(entry_price, 4),
             "exit_price": round(exit_price, 4),
             "exit_reason": exit_reason,
@@ -524,7 +536,11 @@ async def main() -> None:
         for m in universe:
             t = await process_market(client, m)
             all_trades.extend(t)
-        all_trades.sort(key=lambda t: t.get("entry_price", 0))
+        # Chronological ordering — the cumulative P&L line below
+        # compounds trade-by-trade, so we need the actual sequence.
+        # Previously sorted by entry_price which scrambled the order
+        # and made the equity curve summary meaningless.
+        all_trades.sort(key=lambda t: t.get("entry_ts") or "")
 
     if not all_trades:
         print("No trades fired.")
