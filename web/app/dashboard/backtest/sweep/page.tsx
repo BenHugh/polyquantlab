@@ -31,7 +31,7 @@ export default async function SweepPage() {
   return (
     <div className="max-w-3xl mx-auto">
       <PageHeader
-        eyebrow="Strategy"
+        prefix="/ 02 –"
         title="Parameter sweep"
         subtitle={
           <>

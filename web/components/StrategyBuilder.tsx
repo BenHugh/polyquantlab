@@ -18,6 +18,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import toast from "react-hot-toast";
+import QSelect from "@/components/QSelect";
 import { generatePython, type CodegenGroup, type CodegenSpec } from "@/libs/pythonCodegen";
 
 type Ticker = "BTC" | "ETH" | "SOL";
@@ -1210,28 +1211,28 @@ export default function StrategyBuilder() {
       >
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Field label="Coin">
-            <select
-              className="select select-sm select-bordered w-full"
+            <QSelect
               value={state.ticker}
-              onChange={(e) => update("ticker", e.target.value as Ticker)}
-            >
-              <option value="BTC">BTC</option>
-              <option value="ETH">ETH</option>
-              <option value="SOL">SOL</option>
-            </select>
+              onChange={(v) => update("ticker", v as Ticker)}
+              options={[
+                { value: "BTC", label: "BTC" },
+                { value: "ETH", label: "ETH" },
+                { value: "SOL", label: "SOL" },
+              ]}
+            />
           </Field>
           <Field label="Timeframe">
-            <select
-              className="select select-sm select-bordered w-full"
+            <QSelect
               value={state.eventType}
-              onChange={(e) => update("eventType", e.target.value as EventType)}
-            >
-              <option value="5m">5m</option>
-              <option value="15m">15m</option>
-              <option value="1h">1h</option>
-              <option value="4h">4h</option>
-              <option value="daily_up_down">Daily</option>
-            </select>
+              onChange={(v) => update("eventType", v as EventType)}
+              options={[
+                { value: "5m", label: "5m" },
+                { value: "15m", label: "15m" },
+                { value: "1h", label: "1h" },
+                { value: "4h", label: "4h" },
+                { value: "daily_up_down", label: "Daily" },
+              ]}
+            />
           </Field>
           <Field label={`Markets · ${state.marketLimit}`}>
             <input
@@ -1271,18 +1272,16 @@ export default function StrategyBuilder() {
               }
             />
           </Field>
-          <Field
-            label="Fill mode"
-          >
-            <select
-              className="select select-sm select-bordered w-full"
+          <Field label="Fill mode">
+            <QSelect
               value={state.fillMode}
-              onChange={(e) => update("fillMode", e.target.value as FillMode)}
+              onChange={(v) => update("fillMode", v as FillMode)}
               title="Walk-book = realistic (hit best ask). Mid = optimistic, matches PolyBackTest."
-            >
-              <option value="walk_book">Walk book (realistic)</option>
-              <option value="mid">Mid fill (optimistic)</option>
-            </select>
+              options={[
+                { value: "walk_book", label: "Walk book", hint: "realistic" },
+                { value: "mid", label: "Mid fill", hint: "optimistic" },
+              ]}
+            />
           </Field>
           <Field label={`Max fill price · ${state.maxFillPrice.toFixed(2)}`}>
             <input
@@ -1299,17 +1298,15 @@ export default function StrategyBuilder() {
             />
           </Field>
           <Field label="Order type">
-            <select
-              className="select select-sm select-bordered w-full"
+            <QSelect
               value={state.orderType}
-              onChange={(e) =>
-                update("orderType", e.target.value as "market" | "limit")
-              }
+              onChange={(v) => update("orderType", v as "market" | "limit")}
               title="Market = taker, instant fill at best ask (2% fee). Limit = maker, post below market and wait — may never fill, but 0% fee."
-            >
-              <option value="market">Market (taker, 2% fee)</option>
-              <option value="limit">Limit (maker, 0% fee)</option>
-            </select>
+              options={[
+                { value: "market", label: "Market", hint: "taker · 2% fee" },
+                { value: "limit", label: "Limit", hint: "maker · 0% fee" },
+              ]}
+            />
           </Field>
           {state.orderType === "limit" && (
             <>
@@ -1480,14 +1477,16 @@ export default function StrategyBuilder() {
         subtitle="Buy UP or DOWN token?"
         readsAs={`Every trade buys the ${readsAs.dir} token.`}
       >
-        <select
-          className="select select-sm select-bordered max-w-xs"
-          value={state.tradeLogic}
-          onChange={(e) => update("tradeLogic", e.target.value as TradeLogic)}
-        >
-          <option value="always_up">Always UP</option>
-          <option value="always_down">Always DOWN</option>
-        </select>
+        <div className="max-w-xs">
+          <QSelect
+            value={state.tradeLogic}
+            onChange={(v) => update("tradeLogic", v as TradeLogic)}
+            options={[
+              { value: "always_up", label: "Always UP" },
+              { value: "always_down", label: "Always DOWN" },
+            ]}
+          />
+        </div>
       </Section>
 
       <Section
@@ -1817,37 +1816,44 @@ function ConditionRow({
         {index}
       </span>
 
-      <select
-        className="select select-xs select-ghost min-w-0 flex-1 max-w-[10rem]"
-        value={c.type}
-        onChange={(e) => onPatch({ type: e.target.value as ConditionType })}
-        title={spec.description}
-      >
-        {(Object.keys(PARAM_SPECS) as ConditionType[]).map((t) => (
-          <option key={t} value={t}>{PARAM_SPECS[t].label}</option>
-        ))}
-      </select>
+      <div className="min-w-0 flex-1 max-w-[10rem]">
+        <QSelect
+          size="xs"
+          value={c.type}
+          onChange={(v) => onPatch({ type: v as ConditionType })}
+          title={spec.description}
+          options={(Object.keys(PARAM_SPECS) as ConditionType[]).map((t) => ({
+            value: t,
+            label: PARAM_SPECS[t].label,
+          }))}
+        />
+      </div>
 
       {spec.hasSide && (
-        <select
-          className="select select-xs select-ghost w-16 shrink-0"
-          value={c.side ?? "yes"}
-          onChange={(e) => onPatch({ side: e.target.value as TokenSide })}
-        >
-          <option value="yes">UP</option>
-          <option value="no">DOWN</option>
-        </select>
+        <div className="w-16 shrink-0">
+          <QSelect
+            size="xs"
+            value={c.side ?? "yes"}
+            onChange={(v) => onPatch({ side: v as TokenSide })}
+            options={[
+              { value: "yes", label: "UP" },
+              { value: "no", label: "DOWN" },
+            ]}
+          />
+        </div>
       )}
 
-      <select
-        className="select select-xs select-ghost w-16 shrink-0"
-        value={c.op}
-        onChange={(e) => onPatch({ op: e.target.value as Op })}
-      >
-        {spec.validOps.map((op) => (
-          <option key={op} value={op}>{OP_LABELS[op]}</option>
-        ))}
-      </select>
+      <div className="w-16 shrink-0">
+        <QSelect
+          size="xs"
+          value={c.op}
+          onChange={(v) => onPatch({ op: v as Op })}
+          options={spec.validOps.map((op) => ({
+            value: op,
+            label: OP_LABELS[op],
+          }))}
+        />
+      </div>
 
       <input
         type="number"

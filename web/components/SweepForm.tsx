@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import toast from "react-hot-toast";
+import QSelect from "@/components/QSelect";
 
 /**
  * Sweep configuration form.
@@ -218,15 +219,11 @@ export default function SweepForm({
         <div className="p-5 grid grid-cols-2 gap-4">
           <label className="block">
             <span className="q-label">Ticker</span>
-            <select
-              className="select select-sm select-bordered w-full"
+            <QSelect
               value={ticker}
-              onChange={(e) => setTicker(e.target.value as typeof ticker)}
-            >
-              {TICKERS.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
+              onChange={(v) => setTicker(v as typeof ticker)}
+              options={TICKERS.map((t) => ({ value: t, label: t }))}
+            />
           </label>
           <label className="block">
             <span className="q-label">Market limit · max {maxMarketLimit}</span>
@@ -258,15 +255,15 @@ export default function SweepForm({
         <div className="p-5 space-y-3">
         <label className="block">
           <span className="q-label">Type</span>
-          <select
-            className="select select-sm select-bordered w-full"
+          <QSelect
             value={strategyType}
-            onChange={(e) => switchStrategy(e.target.value as StrategyType)}
-          >
-            <option value="threshold_entry">Threshold entry</option>
-            <option value="mean_reversion">Mean reversion</option>
-            <option value="time_before_resolution">Time before resolution</option>
-          </select>
+            onChange={(v) => switchStrategy(v as StrategyType)}
+            options={[
+              { value: "threshold_entry", label: "Threshold entry" },
+              { value: "mean_reversion", label: "Mean reversion" },
+              { value: "time_before_resolution", label: "Time before resolution" },
+            ]}
+          />
         </label>
 
         {/* Non-numeric (un-sweepable) params still need values */}
@@ -408,11 +405,10 @@ function AxisFieldset({
     <div className="grid grid-cols-4 gap-3">
       <label className="block">
         <span className="q-label">Param</span>
-        <select
-          className="select select-sm select-bordered w-full"
+        <QSelect
           value={axis.param}
-          onChange={(e) => {
-            const p = sweepable.find((s) => s.key === e.target.value);
+          onChange={(v) => {
+            const p = sweepable.find((s) => s.key === v);
             if (!p) return;
             onChange({
               ...axis,
@@ -421,11 +417,8 @@ function AxisFieldset({
               end: p.defaultEnd,
             });
           }}
-        >
-          {sweepable.map((p) => (
-            <option key={p.key} value={p.key}>{p.label}</option>
-          ))}
-        </select>
+          options={sweepable.map((p) => ({ value: p.key, label: p.label }))}
+        />
       </label>
       <NumberField
         label="From"
@@ -495,15 +488,7 @@ function SelectField({
   return (
     <label className="block">
       <span className="q-label">{label}</span>
-      <select
-        className="select select-sm select-bordered w-full"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
+      <QSelect value={value} onChange={onChange} options={options} />
     </label>
   );
 }
