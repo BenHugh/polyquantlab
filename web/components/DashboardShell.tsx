@@ -23,6 +23,18 @@ import ThemeToggle from "@/components/ThemeToggle";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
+import {
+  Activity,
+  BookmarkCheck,
+  Boxes,
+  Grid2x2,
+  Grid3x3,
+  KeyRound,
+  LayoutDashboard,
+  ListOrdered,
+  PlayCircle,
+  Sparkles,
+} from "lucide-react";
 
 interface NavItem {
   href: string;
@@ -32,54 +44,63 @@ interface NavItem {
   exact?: boolean;
 }
 
+// lucide stroke icons, 16px, 1.75 weight — keeps the same visual mass
+// as the previous inline SVGs but with consistent corner-radius and
+// optical alignment across the icon family.
+const ICON_PROPS = { size: 16, strokeWidth: 1.75 } as const;
+
 const NAV: NavItem[] = [
   {
     href: "/dashboard",
     label: "Overview",
     exact: true,
-    icon: <IconGrid />,
+    icon: <LayoutDashboard {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/markets",
     label: "Markets",
-    icon: <IconList />,
+    icon: <ListOrdered {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/live",
     label: "Live Terminal",
-    icon: <IconActivity />,
+    icon: <Activity {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/strategy-builder",
     label: "Strategy Builder",
-    icon: <IconBlocks />,
+    icon: <Boxes {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/backtest/sweep",
     label: "Sweep",
-    icon: <IconGridDense />,
+    icon: <Grid3x3 {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/backtests",
     label: "Saved backtests",
-    icon: <IconBookmark />,
+    icon: <BookmarkCheck {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/stats/calibration",
     label: "Calibration",
-    icon: <IconSparkles />,
+    icon: <Sparkles {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/paper",
     label: "Paper trading",
-    icon: <IconPlay />,
+    icon: <PlayCircle {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/api-keys",
     label: "API keys",
-    icon: <IconKey />,
+    icon: <KeyRound {...ICON_PROPS} />,
   },
 ];
+
+// Silence "unused import" lint for icons exported but only consumed as
+// JSX above. (Grid2x2 reserved for a future grouped dashboard view.)
+void Grid2x2;
 
 export default function DashboardShell({
   children,
@@ -213,95 +234,11 @@ export default function DashboardShell({
   );
 }
 
-/* ─── Icons (inline SVG to avoid any icon-library dependency) ──────── */
-function IconGrid() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="3" y="3" width="7" height="7" rx="1.5" />
-      <rect x="14" y="3" width="7" height="7" rx="1.5" />
-      <rect x="3" y="14" width="7" height="7" rx="1.5" />
-      <rect x="14" y="14" width="7" height="7" rx="1.5" />
-    </svg>
-  );
-}
-function IconList() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <line x1="8" y1="6" x2="21" y2="6" />
-      <line x1="8" y1="12" x2="21" y2="12" />
-      <line x1="8" y1="18" x2="21" y2="18" />
-      <circle cx="4" cy="6" r="1.5" />
-      <circle cx="4" cy="12" r="1.5" />
-      <circle cx="4" cy="18" r="1.5" />
-    </svg>
-  );
-}
-function IconCharts() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polyline points="3,17 9,11 13,15 21,7" />
-      <polyline points="14,7 21,7 21,14" />
-    </svg>
-  );
-}
-function IconGridDense() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="3" y="3" width="4" height="4" rx="1" />
-      <rect x="10" y="3" width="4" height="4" rx="1" />
-      <rect x="17" y="3" width="4" height="4" rx="1" />
-      <rect x="3" y="10" width="4" height="4" rx="1" />
-      <rect x="10" y="10" width="4" height="4" rx="1" />
-      <rect x="17" y="10" width="4" height="4" rx="1" />
-      <rect x="3" y="17" width="4" height="4" rx="1" />
-      <rect x="10" y="17" width="4" height="4" rx="1" />
-      <rect x="17" y="17" width="4" height="4" rx="1" />
-    </svg>
-  );
-}
-function IconSparkles() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8" />
-    </svg>
-  );
-}
-function IconPlay() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polygon points="6,4 20,12 6,20" fill="currentColor" />
-    </svg>
-  );
-}
-function IconBookmark() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
-function IconBlocks() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="8" height="8" rx="1.5" />
-      <rect x="13" y="3" width="8" height="8" rx="1.5" />
-      <rect x="3" y="13" width="8" height="8" rx="1.5" />
-      <path d="M17 13v8M13 17h8" />
-    </svg>
-  );
-}
-function IconActivity() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-    </svg>
-  );
-}
-function IconKey() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="8" cy="14" r="4" />
-      <path d="M11 11l9-9M16 6l3 3" />
-    </svg>
-  );
-}
+/* Inline SVG icon components removed in favour of lucide-react —
+ * see imports at the top of this file. Each maps directly:
+ *   IconGrid → LayoutDashboard, IconList → ListOrdered,
+ *   IconActivity → Activity,    IconBlocks → Boxes,
+ *   IconGridDense → Grid3x3,    IconBookmark → BookmarkCheck,
+ *   IconSparkles → Sparkles,    IconPlay → PlayCircle,
+ *   IconKey → KeyRound.
+ */

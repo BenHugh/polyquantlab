@@ -15,7 +15,15 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  Boxes,
+  Clock,
+  Grid3x3,
+  Hash,
+  Repeat,
+  SlidersHorizontal,
+} from "lucide-react";
 
 interface Job {
   job_id: string;
@@ -143,6 +151,24 @@ function Row({ job }: { job: Job }) {
   const stratType =
     job.params.strategy?.type ??
     (isSweep ? "sweep" : "—");
+  // Icon hint per strategy type so the list reads as a glance-able log
+  // (custom condition_based, threshold, mean-reversion, time-before,
+  // sweep). lucide stroke icons, accent-coloured by type-family.
+  const iconAndColor: { icon: ReactNode; color: string } = (() => {
+    if (isSweep) return { icon: <Grid3x3 size={12} strokeWidth={2} />, color: "text-warning" };
+    switch (stratType) {
+      case "condition_based":
+        return { icon: <Boxes size={12} strokeWidth={2} />, color: "text-info" };
+      case "threshold_entry":
+        return { icon: <SlidersHorizontal size={12} strokeWidth={2} />, color: "text-secondary" };
+      case "mean_reversion":
+        return { icon: <Repeat size={12} strokeWidth={2} />, color: "text-success" };
+      case "time_before_resolution":
+        return { icon: <Clock size={12} strokeWidth={2} />, color: "text-base-content/60" };
+      default:
+        return { icon: <Hash size={12} strokeWidth={2} />, color: "text-base-content/40" };
+    }
+  })();
   const universe =
     [
       job.params.ticker,
@@ -170,7 +196,14 @@ function Row({ job }: { job: Job }) {
       <td className="font-mono text-xs text-base-content/70 whitespace-nowrap">
         {formatRelative(job.submitted_at)}
       </td>
-      <td className="font-mono text-xs">{stratType}</td>
+      <td className="font-mono text-xs">
+        <span className="inline-flex items-center gap-1.5">
+          <span className={`shrink-0 ${iconAndColor.color}`} aria-hidden>
+            {iconAndColor.icon}
+          </span>
+          <span>{stratType}</span>
+        </span>
+      </td>
       <td className="font-mono text-xs text-base-content/70 whitespace-nowrap">
         {universe}
       </td>

@@ -1,4 +1,12 @@
 import type { ReactNode } from "react";
+import {
+  Activity,
+  BarChart3,
+  Boxes,
+  CandlestickChart,
+  CheckCircle2,
+  Clock,
+} from "lucide-react";
 import AnimatedCounter from "@/components/AnimatedCounter";
 import ButtonSignin from "@/components/ButtonSignin";
 import Pricing from "@/components/Pricing";
@@ -164,18 +172,18 @@ export default function Page() {
               <FeatureCard
                 title="Sub-second orderbook depth"
                 body="8 snapshots/sec/market across BTC, ETH, SOL. Walk-the-book backtests with realistic partial fills and Polymarket's 2026 taker fees."
-                icon={<IconDepth />}
+                icon={<CandlestickChart size={20} strokeWidth={1.75} />}
               />
               <FeatureCard
                 title="Find real mispricing"
                 body="Calibration plots reveal where Polymarket's implied probability diverges from observed Up rates — exactly the signal that bot operators turn into edge."
-                icon={<IconCalibration />}
+                icon={<BarChart3 size={20} strokeWidth={1.75} />}
                 accent
               />
               <FeatureCard
                 title="Validate before deploying"
                 body="Parameter sweeps surface robust plateaus over isolated spikes. Paper trading runs your strategy live for out-of-sample confirmation."
-                icon={<IconValidate />}
+                icon={<CheckCircle2 size={20} strokeWidth={1.75} />}
               />
             </div>
 
@@ -183,17 +191,17 @@ export default function Page() {
               <FeatureCard
                 title="Live Terminal"
                 body="Currently-trading 5m/15m/1h/4h/daily markets side by side with Binance spot. Mispricing badges surface when implied probability diverges from historical Up rate by 5pp+."
-                icon={<IconActivity />}
+                icon={<Activity size={20} strokeWidth={1.75} />}
               />
               <FeatureCard
                 title="No-code Strategy Builder"
                 body="Compose Entry / Take Profit / Stop Loss from typed conditions — Token price, Spread, Time to resolution. Same engine, same fees, no Python required."
-                icon={<IconBlocks />}
+                icon={<Boxes size={20} strokeWidth={1.75} />}
               />
               <FeatureCard
                 title="120-day retention"
                 body="Twice the lookback window PolyBackTest offers. Long enough to backtest across regime shifts, not just last month's tape."
-                icon={<IconClock />}
+                icon={<Clock size={20} strokeWidth={1.75} />}
               />
             </div>
           </div>
@@ -316,54 +324,6 @@ function Step({
   );
 }
 
-/* ─── Inline SVG icons ────────────────────────────────────────────── */
-function IconDepth() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M3 18l4-6 4 4 5-9 5 11" />
-      <path d="M3 21h18" />
-    </svg>
-  );
-}
-function IconCalibration() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="6" cy="18" r="2" />
-      <circle cx="12" cy="12" r="2" />
-      <circle cx="18" cy="6" r="2" />
-      <line x1="3" y1="21" x2="21" y2="3" strokeDasharray="3 2" opacity="0.5" />
-    </svg>
-  );
-}
-function IconValidate() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
-function IconActivity() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-    </svg>
-  );
-}
-function IconBlocks() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="8" height="8" rx="1.5" />
-      <rect x="13" y="3" width="8" height="8" rx="1.5" />
-      <rect x="3" y="13" width="8" height="8" rx="1.5" />
-      <path d="M17 13v8M13 17h8" />
-    </svg>
-  );
-}
-function IconClock() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <polyline points="12 6 12 12 16 14" />
-    </svg>
-  );
-}
+/* Inline icon components removed — feature cards now use lucide-react
+ * icons imported at the top of this file. Visual mass (20px, 1.75
+ * stroke) is preserved so layout doesn't shift. */

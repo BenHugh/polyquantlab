@@ -4,6 +4,7 @@ import { formatDateTime } from "@/libs/formatDate";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
+import { Pause, Play, Plus, Trash2 } from "lucide-react";
 
 interface PaperStrategy {
   paper_strategy_id: string;
@@ -85,7 +86,8 @@ export default function PaperStrategiesList() {
           virtual P&L.
         </p>
         <Link href="/dashboard/paper/new" className="btn btn-primary">
-          + New strategy
+          <Plus size={16} strokeWidth={2} />
+          New strategy
         </Link>
       </div>
     );
@@ -135,15 +137,21 @@ export default function PaperStrategiesList() {
                 </td>
                 <td className="text-right whitespace-nowrap">
                   <button
-                    className="btn btn-xs btn-outline mr-1"
+                    className="btn btn-xs btn-ghost mr-1 gap-1"
                     onClick={() => setActive(s.paper_strategy_id, !s.active)}
+                    title={s.active ? "Pause this paper strategy" : "Resume this paper strategy"}
                   >
+                    {s.active
+                      ? <Pause size={12} strokeWidth={2} />
+                      : <Play size={12} strokeWidth={2} />}
                     {s.active ? "Pause" : "Resume"}
                   </button>
                   <button
-                    className="btn btn-xs btn-error btn-outline"
+                    className="btn btn-xs btn-ghost text-error hover:bg-error/10 gap-1"
                     onClick={() => remove(s.paper_strategy_id)}
+                    title="Delete this paper strategy"
                   >
+                    <Trash2 size={12} strokeWidth={2} />
                     Delete
                   </button>
                 </td>

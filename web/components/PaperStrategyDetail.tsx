@@ -3,7 +3,17 @@
 import ExportButtons from "@/components/ExportButtons";
 import { formatDateTime } from "@/libs/formatDate";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  Activity,
+  ArrowDownRight,
+  ArrowUpRight,
+  DollarSign,
+  Hash,
+  Scale,
+  Target,
+  Trophy,
+} from "lucide-react";
 
 interface Strategy {
   paper_strategy_id: string;
@@ -263,12 +273,18 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat
           label="Net P&L"
+          icon={<DollarSign size={13} strokeWidth={2} />}
           value={`${equity && equity.final_net_pnl >= 0 ? "+" : ""}$${equity ? equity.final_net_pnl.toFixed(2) : "0.00"}`}
           accent={equity && equity.final_net_pnl >= 0 ? "success" : equity && equity.final_net_pnl < 0 ? "error" : undefined}
         />
-        <Stat label="Win rate" value={`${(winRate * 100).toFixed(1)}%`} />
+        <Stat
+          label="Win rate"
+          icon={<Target size={13} strokeWidth={2} />}
+          value={`${(winRate * 100).toFixed(1)}%`}
+        />
         <Stat
           label="Profit factor"
+          icon={<Scale size={13} strokeWidth={2} />}
           value={
             profitFactor === null
               ? "—"
@@ -286,6 +302,7 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
         />
         <Stat
           label="Avg trade"
+          icon={<Activity size={13} strokeWidth={2} />}
           value={`${avgTrade >= 0 ? "+" : ""}$${avgTrade.toFixed(2)}`}
           accent={
             closed.length === 0 ? undefined :
@@ -297,21 +314,25 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat
           label="Best trade"
+          icon={<Trophy size={13} strokeWidth={2} />}
           value={bestTrade !== null ? `+$${bestTrade.toFixed(2)}` : "—"}
           accent={bestTrade !== null && bestTrade > 0 ? "success" : undefined}
         />
         <Stat
           label="Worst trade"
+          icon={<ArrowDownRight size={13} strokeWidth={2} />}
           value={worstTrade !== null ? `$${worstTrade.toFixed(2)}` : "—"}
           accent={worstTrade !== null && worstTrade < 0 ? "error" : undefined}
         />
         <Stat
           label="Max drawdown"
+          icon={<ArrowUpRight size={13} strokeWidth={2} className="rotate-180" />}
           value={`$${maxDrawdown.toFixed(2)}`}
           accent={maxDrawdown > 0 ? "error" : undefined}
         />
         <Stat
           label="Trades"
+          icon={<Hash size={13} strokeWidth={2} />}
           value={`${wins} W / ${losses} L`}
         />
       </div>
@@ -416,12 +437,29 @@ export default function PaperStrategyDetail({ strategyId }: { strategyId: string
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: "success" | "error" }) {
+function Stat({
+  label,
+  value,
+  accent,
+  icon,
+}: {
+  label: string;
+  value: string;
+  accent?: "success" | "error";
+  icon?: ReactNode;
+}) {
   const color = accent === "success" ? "text-success" : accent === "error" ? "text-error" : "";
+  // Icon colour mirrors the value's accent so a quick scan of the
+  // 4-up stat row signals positive / negative / neutral at a glance.
+  const iconColor =
+    accent === "success" ? "text-success/70" : accent === "error" ? "text-error/70" : "text-base-content/40";
   return (
     <div className="rounded-lg border border-base-300 bg-base-100 p-3">
-      <div className="text-xs uppercase tracking-wide opacity-60">{label}</div>
-      <div className={`font-semibold mt-1 ${color}`}>{value}</div>
+      <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide opacity-60">
+        {icon && <span className={`shrink-0 ${iconColor}`} aria-hidden>{icon}</span>}
+        <span>{label}</span>
+      </div>
+      <div className={`font-semibold mt-1 font-mono tabular-nums ${color}`}>{value}</div>
     </div>
   );
 }
