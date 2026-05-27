@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Clock, Filter, Zap } from "lucide-react";
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Clock, Filter, Zap } from "lucide-react";
 import CoinIcon from "@/components/CoinIcon";
 import QSelect from "@/components/QSelect";
 
@@ -74,14 +74,19 @@ export default function ArbDashboard() {
   const [loading, setLoading] = useState(true);
   const [minEdgePp, setMinEdgePp] = useState(0.04);
   const [tierFilter, setTierFilter] = useState<"all" | "stable" | "stale">("stable");
+  const [tickerFilter, setTickerFilter] = useState<"all" | "BTC" | "ETH" | "SOL">("all");
   const [paused, setPaused] = useState(false);
   const [lastFetched, setLastFetched] = useState<number>(0);
 
   const fetchArb = useCallback(async () => {
     try {
+      // limit raised from 50 → 200: BTC alone often saturates 50, so
+      // ETH/SOL get truncated. 200 gives enough headroom across all
+      // 3 tickers + 5 timeframes without straining the engine
+      // (typical scan time stays under 600ms even at 200).
       const params = new URLSearchParams({
         min_edge_pp: String(minEdgePp),
-        limit: "50",
+        limit: "200",
       });
       const res = await fetch(`/api/arb?${params.toString()}`, {
         cache: "no-store",
@@ -179,6 +184,8 @@ export default function ArbDashboard() {
           rows={data.opportunities}
           tierFilter={tierFilter}
           onTierFilterChange={setTierFilter}
+          tickerFilter={tickerFilter}
+          onTickerFilterChange={setTickerFilter}
         />
       ) : null}
 
@@ -291,19 +298,38 @@ function OpportunityTable({
   rows,
   tierFilter,
   onTierFilterChange,
+  tickerFilter,
+  onTickerFilterChange,
 }: {
   rows: ArbOpportunity[];
   tierFilter: "all" | "stable" | "stale";
   onTierFilterChange: (v: "all" | "stable" | "stale") => void;
+  tickerFilter: "all" | "BTC" | "ETH" | "SOL";
+  onTickerFilterChange: (v: "all" | "BTC" | "ETH" | "SOL") => void;
 }) {
-  const stableCount = rows.filter((r) => r.tier === "stable").length;
-  const staleCount = rows.filter((r) => r.tier === "stale").length;
-  const filtered = rows.filter(
+  // Apply ticker filter first (cheaper, fewer rows for tier counts to walk)
+  const tickerFiltered =
+    tickerFilter === "all"
+      ? rows
+      : rows.filter((r) => r.ticker === tickerFilter);
+  const stableCount = tickerFiltered.filter((r) => r.tier === "stable").length;
+  const staleCount = tickerFiltered.filter((r) => r.tier === "stale").length;
+  const filtered = tickerFiltered.filter(
     (r) => tierFilter === "all" || r.tier === tierFilter,
   );
+
+  // Per-ticker counts for the ticker filter pills — count from ALL rows
+  // (not tier-filtered) so the user knows the underlying coverage even
+  // when narrowed to stable/stale.
+  const tickerCounts = {
+    BTC: rows.filter((r) => r.ticker === "BTC").length,
+    ETH: rows.filter((r) => r.ticker === "ETH").length,
+    SOL: rows.filter((r) => r.ticker === "SOL").length,
+  };
+
   return (
     <div className="q-panel">
-      <header className="q-panel-header">
+      <header className="q-panel-header flex-wrap gap-y-2">
         <div className="flex items-center gap-2.5 min-w-0">
           <span className="shrink-0 text-success" aria-hidden>
             <Zap size={16} strokeWidth={2} />
@@ -312,31 +338,58 @@ function OpportunityTable({
             {filtered.length} opportunit{filtered.length === 1 ? "y" : "ies"}
           </h3>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <TierToggleButton
-            label="Stable"
-            count={stableCount}
-            active={tierFilter === "stable"}
-            onClick={() => onTierFilterChange("stable")}
-            dotClass="bg-success"
-            title="Fill price between 0.30 and 0.85 — sitting at the maker-default book; tends to persist 30+ seconds and is actually fillable."
-          />
-          <TierToggleButton
-            label="Stale"
-            count={staleCount}
-            active={tierFilter === "stale"}
-            onClick={() => onTierFilterChange("stale")}
-            dotClass="bg-warning"
-            title="Deep mispricings (fill < 0.30). HFT bots usually arb these in milliseconds — likely gone by the time you click."
-          />
-          <TierToggleButton
-            label="All"
-            count={rows.length}
-            active={tierFilter === "all"}
-            onClick={() => onTierFilterChange("all")}
-            dotClass="bg-base-content/40"
-            title="Show every opportunity that cleared engine filters."
-          />
+        <div className="flex items-center gap-3 shrink-0 flex-wrap">
+          {/* Ticker filter — pills, default "all" so user sees full coverage */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onTickerFilterChange("all")}
+              className={`btn btn-xs gap-1.5 ${tickerFilter === "all" ? "btn-primary" : "btn-ghost"}`}
+              title="Show all tickers"
+            >
+              All
+              <span className="font-mono text-[10px] opacity-70">{rows.length}</span>
+            </button>
+            {(["BTC", "ETH", "SOL"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => onTickerFilterChange(t)}
+                className={`btn btn-xs gap-1.5 ${tickerFilter === t ? "btn-primary" : "btn-ghost"}`}
+                title={`Show ${t} opportunities only`}
+              >
+                <CoinIcon ticker={t} size={12} />
+                <span className="font-mono text-[10px] opacity-70">{tickerCounts[t]}</span>
+              </button>
+            ))}
+          </div>
+          {/* Tier filter — separate from ticker so users can compose */}
+          <div className="flex items-center gap-1 border-l border-base-300/60 pl-3">
+            <TierToggleButton
+              label="Stable"
+              count={stableCount}
+              active={tierFilter === "stable"}
+              onClick={() => onTierFilterChange("stable")}
+              dotClass="bg-success"
+              title="Fill price between 0.30 and 0.85 — sitting at the maker-default book; tends to persist 30+ seconds and is actually fillable."
+            />
+            <TierToggleButton
+              label="Stale"
+              count={staleCount}
+              active={tierFilter === "stale"}
+              onClick={() => onTierFilterChange("stale")}
+              dotClass="bg-warning"
+              title="Deep mispricings (fill < 0.30). HFT bots usually arb these in milliseconds — likely gone by the time you click."
+            />
+            <TierToggleButton
+              label="All"
+              count={tickerFiltered.length}
+              active={tierFilter === "all"}
+              onClick={() => onTierFilterChange("all")}
+              dotClass="bg-base-content/40"
+              title="Show every opportunity that cleared engine filters."
+            />
+          </div>
         </div>
       </header>
       <div className="overflow-x-auto">
@@ -352,7 +405,14 @@ function OpportunityTable({
               <th className="text-right">Fill</th>
               <th className="text-right">Spread</th>
               <th className="text-right">Fee</th>
-              <th className="text-right">Net EV / share</th>
+              <th className="text-right">
+                <span
+                  className="cursor-help border-b border-dashed border-base-content/30"
+                  title="Per-share expected profit according to the model: (1 − P_model) − fill_price − fee. This is an UPPER BOUND, not realised return. Polygon gas, execution lag, and adverse selection typically reduce realised return to 40-60% of this number. Verify with paper trading before going live."
+                >
+                  Model Net EV
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -488,10 +548,12 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
         ${o.est_fee_per_share.toFixed(3)}
       </td>
       <td className="text-right">
-        <div className="flex items-center justify-end gap-1.5">
-          <Activity size={12} className="text-success/60" />
+        <div className="flex flex-col items-end leading-tight">
           <span className="font-mono tabular-nums text-success font-semibold">
             +${o.expected_pnl_per_share.toFixed(3)}
+          </span>
+          <span className="text-[10px] text-base-content/40 font-mono">
+            model · before gas
           </span>
         </div>
       </td>
