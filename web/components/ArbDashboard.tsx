@@ -133,15 +133,15 @@ export default function ArbDashboard() {
         </header>
         <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="block">
-            <label className="q-label">Min edge — probability points</label>
+            <label className="q-label">Minimum expected profit per share</label>
             <QSelect
               value={String(minEdgePp)}
               onChange={(v) => setMinEdgePp(parseFloat(v))}
               options={[
-                { value: "0.02", label: "2pp", hint: "more rows, noisier" },
-                { value: "0.04", label: "4pp", hint: "default" },
-                { value: "0.07", label: "7pp", hint: "fewer, cleaner" },
-                { value: "0.10", label: "10pp", hint: "only the obvious" },
+                { value: "0.02", label: "$0.02+", hint: "show everything" },
+                { value: "0.04", label: "$0.04+", hint: "default · noise filtered" },
+                { value: "0.07", label: "$0.07+", hint: "cleaner signal" },
+                { value: "0.10", label: "$0.10+", hint: "only the obvious" },
               ]}
             />
           </div>
@@ -248,8 +248,8 @@ function EmptyState({
       <div className="text-2xl">🌊</div>
       <div className="font-semibold">Books are tight right now</div>
       <p className="text-sm text-base-content/60 max-w-md mx-auto leading-relaxed">
-        No opportunities clear the <strong>{(min_edge_pp * 100).toFixed(1)}pp
-        edge</strong> threshold at{" "}
+        No opportunities clear the{" "}
+        <strong>${min_edge_pp.toFixed(2)}-per-share</strong> threshold at{" "}
         <span className="font-mono">
           {new Date(as_of).toLocaleTimeString()}
         </span>
@@ -259,8 +259,8 @@ function EmptyState({
         rows as soon as something opens up.
       </p>
       <p className="text-xs text-base-content/40 mt-3">
-        Try lowering &quot;Min edge&quot; to 2pp to see marginal opportunities
-        that are dominated by fees but illustrate the engine&apos;s view.
+        Try lowering the threshold to <strong>$0.02</strong> to see marginal
+        opportunities (educational — these are mostly eaten by fees).
       </p>
     </div>
   );
