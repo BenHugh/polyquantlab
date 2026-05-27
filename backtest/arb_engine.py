@@ -108,6 +108,15 @@ class ArbOpportunity:
 # ---------------------------------------------------------------------------
 
 
+# Sampling cadence for the vol estimator. Tick-level (~50ms) close-to-
+# close σ is dominated by microstructure noise (bid-ask bounce, latency
+# jitter) — empirically inflates σ by ~5x for BTC. Sampling at a coarser
+# interval discards the noise and recovers the fundamental σ. 5s is the
+# sweet spot: still tight enough to capture intra-hour regime, but well
+# above bid-ask bounce timescale.
+VOL_SAMPLE_INTERVAL_SEC = 5
+
+
 async def realised_vol(
     ch: AsyncClient,
     ticker: str,
@@ -115,20 +124,27 @@ async def realised_vol(
     window_sec: int = DEFAULT_VOL_WINDOW_SEC,
 ) -> float | None:
     """Annualised realised volatility from Binance ticks in
-    [now − window, now]. Uses log returns of consecutive ticks; the
-    high tick density (~20/s for BTC) makes the close-to-close estimator
-    fine without needing realised-kernel adjustments.
+    [now − window, now], bucketed into 5-second bars before taking log
+    returns. ClickHouse does the bucketing server-side via
+    toStartOfInterval(... INTERVAL 5 SECOND) + argMax(price, ts) to get
+    the bar close (last tick) per bucket.
 
-    Returns None if fewer than 30 samples land in the window — under that
+    Why 5s bars instead of raw ticks: ticks are ~50ms apart with heavy
+    microstructure noise (bid-ask bounce inflates σ by 3-5×). Sampling
+    at 5s discards the noise and recovers the fundamental σ that maps
+    to "how much will price move in the next hour".
+
+    Returns None if fewer than 30 bars land in the window — under that
     the σ estimate is too noisy to trust.
     """
     rows = await ch.query(
-        """
-        SELECT price
+        f"""
+        SELECT argMax(price, ts) AS px
           FROM underlying_prices
-         WHERE ticker = {ticker:String}
-           AND ts BETWEEN {start:DateTime64(3)} AND {end:DateTime64(3)}
-         ORDER BY ts
+         WHERE ticker = {{ticker:String}}
+           AND ts BETWEEN {{start:DateTime64(3)}} AND {{end:DateTime64(3)}}
+         GROUP BY toStartOfInterval(ts, INTERVAL {VOL_SAMPLE_INTERVAL_SEC} SECOND)
+         ORDER BY toStartOfInterval(ts, INTERVAL {VOL_SAMPLE_INTERVAL_SEC} SECOND)
         """,
         parameters={
             "ticker": ticker,
@@ -139,9 +155,6 @@ async def realised_vol(
     prices = [float(r[0]) for r in rows.result_rows if r[0] is not None]
     if len(prices) < 30:
         return None
-    # Log returns between consecutive ticks. Ticks aren't equally spaced
-    # but at 10-50ms cadence the irregularity is negligible at the σ
-    # estimator's accuracy bound.
     log_rets: list[float] = []
     for i in range(1, len(prices)):
         if prices[i - 1] > 0 and prices[i] > 0:
@@ -150,10 +163,10 @@ async def realised_vol(
         return None
     mean = sum(log_rets) / len(log_rets)
     var = sum((r - mean) ** 2 for r in log_rets) / max(1, len(log_rets) - 1)
-    # σ per tick → σ per second via sqrt(ticks_per_sec) → σ annualised.
-    ticks_per_sec = len(log_rets) / window_sec
-    sigma_per_sec = math.sqrt(var) * math.sqrt(ticks_per_sec)
-    return sigma_per_sec * math.sqrt(365 * 24 * 3600)
+    sigma_per_bar = math.sqrt(var)
+    # bars per year = (seconds per year) / (seconds per bar)
+    bars_per_year = (365.0 * 24.0 * 3600.0) / VOL_SAMPLE_INTERVAL_SEC
+    return sigma_per_bar * math.sqrt(bars_per_year)
 
 
 async def latest_underlying(
@@ -307,7 +320,7 @@ async def find_live_opportunities(
     rows = await pg_pool.fetch(
         """
         SELECT m.market_id, e.ticker, e.event_type, e.resolution_at,
-               m.question
+               e.question
           FROM markets m
           JOIN events e ON e.event_id = m.event_id
          WHERE e.ticker      = ANY($1::text[])
