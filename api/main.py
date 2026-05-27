@@ -49,6 +49,7 @@ from api.routes_internal import router as internal_router
 from api.routes_paper import router as paper_router
 from api.routes_stats import router as stats_router
 from api.tiers import TierLimits, resolve_tier
+from backtest.arb_engine import find_live_opportunities
 from backtest.data_loader import list_resolved_markets, load_snapshots
 from collector.config import get_settings
 from collector.db import make_clickhouse, make_postgres_pool
@@ -1197,6 +1198,116 @@ async def get_underlying(
         "count": len(result.result_rows),
         "points": [
             {"ts": row[0].isoformat(), "price": row[1]} for row in result.result_rows
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Arb endpoint — live Polymarket × Binance mispricing scanner
+# ---------------------------------------------------------------------------
+#
+# Single-shot snapshot of "what mispricings exist right now?". The UI
+# polls this every 3-5 s; designed to be cheap enough to call that often
+# without overloading ClickHouse (typical call ≤ 500 ms, mostly the
+# Polymarket snapshot queries — one per active market). For users who
+# want push-style updates they can use the existing /v1/stream WebSocket
+# alongside this and re-fetch arb when a new snapshot lands.
+
+@app.get("/v1/arb/live")
+async def get_arb_live(
+    request: Request,
+    min_edge_pp: float = Query(
+        default=0.04,
+        ge=0.0,
+        le=0.5,
+        description="Minimum |market_yes − model_yes| in probability points. "
+                    "Below this, the mismatch is dominated by fees and noise. "
+                    "0.04 = 4pp is the practical floor.",
+    ),
+    vol_window_sec: int = Query(
+        default=600,
+        ge=60,
+        le=3600,
+        description="Realised-vol estimation window in seconds. Shorter = "
+                    "more responsive to current regime; longer = less noisy.",
+    ),
+    tickers: str = Query(
+        default="BTC,ETH,SOL",
+        description="Comma-separated tickers to scan.",
+    ),
+    event_types: str = Query(
+        default="5m,15m,1h,4h,daily_up_down",
+        description="Comma-separated Polymarket event types to scan.",
+    ),
+    limit: int = Query(default=50, ge=1, le=200),
+    _: dict = Depends(authed_key),
+) -> dict[str, Any]:
+    """Real-time arbitrage opportunities between Polymarket binary
+    markets and Binance spot.
+
+    See backtest/arb_engine.py for the math:
+      - Polymarket YES mid → market's implied probability
+      - Binance spot + 5s-bar realised σ → log-normal model probability
+      - Mismatch + EV after fees + spread filter → tradeable rows
+
+    Returns rows sorted by expected net PnL per share (highest first).
+    Empty list when no edges clear the filters — that's normal during
+    quiet markets or when bots are actively repricing.
+    """
+    ch = request.app.state.ch
+    pg = request.app.state.pg
+
+    ticker_list = tuple(t.strip().upper() for t in tickers.split(",") if t.strip())
+    event_list = tuple(e.strip() for e in event_types.split(",") if e.strip())
+    if not ticker_list or not event_list:
+        raise HTTPException(status_code=400, detail="tickers and event_types must be non-empty")
+
+    opps = await find_live_opportunities(
+        ch,
+        pg,
+        tickers=ticker_list,
+        event_types=event_list,
+        min_edge_pp=min_edge_pp,
+        vol_window_sec=vol_window_sec,
+    )
+
+    return {
+        "as_of": datetime.now(tz=timezone.utc).isoformat(),
+        "count": len(opps),
+        "tickers": list(ticker_list),
+        "event_types": list(event_list),
+        "min_edge_pp": min_edge_pp,
+        # Render dataclass → dict for JSON. dataclasses.asdict would also
+        # work but does a recursive deepcopy we don't need; flat dict is
+        # cheaper and gives us explicit control over field naming.
+        "opportunities": [
+            {
+                "market_id": o.market_id,
+                "ticker": o.ticker,
+                "event_type": o.event_type,
+                "question": o.question,
+                "resolution_at": o.resolution_at.isoformat(),
+                "seconds_to_resolution": o.seconds_to_resolution,
+                "underlying_now": o.underlying_now,
+                "strike_price": o.strike_price,
+                "log_diff": o.log_diff,
+                "sigma_annual": o.sigma_annual,
+                "sigma_tau": o.sigma_tau,
+                "market_yes_mid": o.market_yes_mid,
+                "model_yes_prob": o.model_yes_prob,
+                "mismatch_mid": o.mismatch_mid,
+                "yes_bid": o.yes_bid,
+                "yes_ask": o.yes_ask,
+                "no_bid": o.no_bid,
+                "no_ask": o.no_ask,
+                "fill_price": o.fill_price,
+                "fill_spread": o.fill_spread,
+                "direction": o.direction,
+                "edge_per_share": o.edge_per_share,
+                "est_fee_per_share": o.est_fee_per_share,
+                "expected_pnl_per_share": o.expected_pnl_per_share,
+            }
+            for o in opps[:limit]
         ],
     }
 

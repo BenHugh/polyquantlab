@@ -34,6 +34,7 @@ import {
   ListOrdered,
   PlayCircle,
   Sparkles,
+  Zap,
 } from "lucide-react";
 
 interface NavItem {
@@ -65,6 +66,11 @@ const NAV: NavItem[] = [
     href: "/dashboard/live",
     label: "Live Terminal",
     icon: <Activity {...ICON_PROPS} />,
+  },
+  {
+    href: "/dashboard/arb",
+    label: "Arb Scanner",
+    icon: <Zap {...ICON_PROPS} />,
   },
   {
     href: "/dashboard/strategy-builder",
