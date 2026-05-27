@@ -68,6 +68,20 @@ DEFAULT_MIN_EDGE_PP = 0.04
 MIN_TAU_S = 60
 MAX_TAU_S = 24 * 3600
 
+# Maximum bid-ask spread on the SIDE WE'D BUY before we drop the row.
+# Wider than this and the "ask" we'd pay isn't representative of real
+# fillable price — the trade looks great on paper but liquidity is fake
+# (classic Polymarket 11¢/89¢ book problem). 0.06 = 6¢ between bid &
+# ask on the side we'd hit is the practical cutoff for "real liquidity".
+MAX_FILL_SPREAD = 0.06
+
+# Refuse to recommend a buy if the ask itself is at the extreme. A
+# trade at 0.97 has almost no upside even if model says 0.999 — pays
+# 3¢ for 3¢ expected payoff before fees. Polymarket fees + slippage
+# would eat it. (Independent of the spread filter: a tight book at
+# 0.96/0.97 still fails this filter.)
+MAX_FILL_PRICE_FOR_BUY = 0.85
+
 
 @dataclass(frozen=True)
 class ArbOpportunity:
@@ -92,14 +106,22 @@ class ArbOpportunity:
     sigma_tau: float          # σ scaled to time-to-resolution
 
     # Probabilities
-    market_yes_mid: float     # Polymarket's view
+    market_yes_mid: float     # Polymarket's YES mid (diagnostic only)
     model_yes_prob: float     # our log-normal view
-    mismatch: float           # market_yes_mid − model_yes_prob (signed)
+    mismatch_mid: float       # market_yes_mid − model_yes_prob (signed)
+
+    # Book (real fillable prices)
+    yes_bid: float
+    yes_ask: float
+    no_bid: float
+    no_ask: float
+    fill_price: float         # the side we'd buy at (yes_ask or no_ask)
+    fill_spread: float        # spread on the side we'd buy (sanity filter)
 
     # Trade hint
     direction: str            # "BUY_YES" or "BUY_NO"
-    edge_per_share: float     # expected gross PnL/share before fees
-    est_fee_per_share: float  # one-sided entry fee at mid
+    edge_per_share: float     # win_prob - fill_price; gross EV per $1 spent
+    est_fee_per_share: float  # one-sided entry fee
     expected_pnl_per_share: float  # after fee
 
 
@@ -240,33 +262,48 @@ def model_yes_probability(
 
 
 def _entry_fee(price: float) -> float:
-    """Polymarket 2026 fee per $1 notional, entering at mid `price`.
+    """Polymarket 2026 fee per $1 notional, entering at price `price`.
     fee = rate × p × (1-p). Exit at resolution (0 or 1) incurs no fee
     because p×(1-p) = 0 at the extremes."""
     return TAKER_FEE_RATE * price * (1.0 - price)
 
 
 def expected_pnl(
-    market_yes_mid: float, model_yes_prob: float
-) -> tuple[str, float, float, float]:
-    """Pick the direction with positive EV. Returns
-    (direction, edge_per_share, fee_per_share, net_per_share).
+    yes_ask: float,
+    no_ask: float,
+    model_yes_prob: float,
+) -> tuple[str, float, float, float, float]:
+    """Pick the side with positive net EV based on REAL fillable asks
+    (not mids). Returns (direction, fill_price, edge, fee, net).
 
-    Per-share economics:
-      Buy YES at p:  win 1 with prob q, lose p with prob (1−q)
-                     gross E = q×(1−p) − (1−q)×p = q − p
-      Buy NO at (1−p): win 1 with prob (1−q), lose (1−p) with prob q
-                     gross E = (1−q)×p − q×(1−p) = p − q
-    So edge = |q − p|; direction = NO if p > q else YES.
-    (p = market_yes_mid, q = model_yes_prob.)
+    Per-share economics, paying real ask price:
+      BUY_YES at yes_ask:  cost = yes_ask, payoff = 1 if YES wins (prob q)
+                           gross E = q × 1 − yes_ask
+                                   = q − yes_ask
+      BUY_NO  at no_ask:   gross E = (1 − q) − no_ask
+
+    Whichever is more positive wins. If both are negative, the market
+    isn't mispriced enough to overcome the bid-ask spread → no trade.
+
+    Args:
+      yes_ask: actual lowest YES ask price (what you'd pay to buy YES)
+      no_ask:  actual lowest NO ask price  (what you'd pay to buy NO)
+      model_yes_prob: model probability that YES outcome occurs (q above)
     """
-    edge = abs(market_yes_mid - model_yes_prob)
-    direction = "BUY_NO" if market_yes_mid > model_yes_prob else "BUY_YES"
-    # Fee approximation: charge the entry-side fee at mid of the side
-    # we're buying. NO mid = 1 − YES mid; fee formula is symmetric.
-    entry_price = market_yes_mid if direction == "BUY_YES" else (1.0 - market_yes_mid)
-    fee = _entry_fee(entry_price)
-    return direction, edge, fee, edge - fee
+    q = model_yes_prob
+    ev_yes = q - yes_ask
+    ev_no = (1.0 - q) - no_ask
+    if ev_yes >= ev_no:
+        direction = "BUY_YES"
+        fill_price = yes_ask
+        gross = ev_yes
+    else:
+        direction = "BUY_NO"
+        fill_price = no_ask
+        gross = ev_no
+    fee = _entry_fee(fill_price)
+    net = gross - fee
+    return direction, fill_price, gross, fee, net
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +400,8 @@ async def find_live_opportunities(
             continue
         yb, ya, nb, na, _up, _ts = latest_snap_rows.result_rows[0]
 
-        market_yes_mid = _mid_from_book(yb, ya)
-        if market_yes_mid is None:
+        book = _book_top(yb, ya, nb, na)
+        if book is None:
             continue
 
         # market_open snapshot's underlying_price is the strike.
@@ -383,17 +420,28 @@ async def find_live_opportunities(
             continue
         strike_price = float(open_rows.result_rows[0][0])
 
-        # 4. Model + EV.
+        # 4. Model + EV using REAL asks (not mid). Mid-based EV looks
+        # great in wide-book Polymarket markets but isn't fillable — see
+        # polymarket_thin_book_reality.md. Using yes_ask / no_ask gives
+        # us the EV of a trade you could actually execute.
         p_model, log_diff, sigma_tau = model_yes_probability(
             underlying_now, strike_price, sigma_annual, tau_s
         )
-        direction, edge, fee, net_ev = expected_pnl(market_yes_mid, p_model)
+        direction, fill_price, edge, fee, net_ev = expected_pnl(
+            book.yes_ask, book.no_ask, p_model
+        )
+        if net_ev <= 0:
+            continue
         if edge < min_edge_pp:
             continue
-        # Defensive: skip rows where the net EV is negative (fees eat
-        # the entire mismatch). We still log a row when |mismatch| was
-        # ≥ min_edge_pp but net_ev < 0; surface only positive nets.
-        if net_ev <= 0:
+
+        # Spread + extreme-price filters on the side we'd buy.
+        fill_spread = (
+            book.yes_spread if direction == "BUY_YES" else book.no_spread
+        )
+        if fill_spread > MAX_FILL_SPREAD:
+            continue
+        if fill_price > MAX_FILL_PRICE_FOR_BUY:
             continue
 
         out.append(
@@ -409,9 +457,15 @@ async def find_live_opportunities(
                 log_diff=log_diff,
                 sigma_annual=sigma_annual,
                 sigma_tau=sigma_tau,
-                market_yes_mid=market_yes_mid,
+                market_yes_mid=book.yes_mid,
                 model_yes_prob=p_model,
-                mismatch=market_yes_mid - p_model,
+                mismatch_mid=book.yes_mid - p_model,
+                yes_bid=book.yes_bid,
+                yes_ask=book.yes_ask,
+                no_bid=book.no_bid,
+                no_ask=book.no_ask,
+                fill_price=fill_price,
+                fill_spread=fill_spread,
                 direction=direction,
                 edge_per_share=edge,
                 est_fee_per_share=fee,
@@ -424,13 +478,34 @@ async def find_live_opportunities(
     return out
 
 
-def _mid_from_book(yb_raw: Any, ya_raw: Any) -> float | None:
-    """Mid of best-bid / best-ask. Same parsing rules as
-    backtest/data_loader.py — orjson loads the JSON string the
-    collector wrote, falls back to None on bad input.
+@dataclass(frozen=True)
+class BookTop:
+    """Both sides' best bid + best ask for a Polymarket binary market.
+    yes_bid / yes_ask are the YES token; no_bid / no_ask are the NO token.
+    These are the ACTUAL fillable prices — what arb EV math should use."""
 
-    Returns None if either side is empty (one-sided book — can't fairly
-    quote a mid). The caller skips the market in that case.
+    yes_bid: float
+    yes_ask: float
+    no_bid: float
+    no_ask: float
+
+    @property
+    def yes_mid(self) -> float:
+        return (self.yes_bid + self.yes_ask) / 2.0
+
+    @property
+    def yes_spread(self) -> float:
+        return self.yes_ask - self.yes_bid
+
+    @property
+    def no_spread(self) -> float:
+        return self.no_ask - self.no_bid
+
+
+def _book_top(yb_raw: Any, ya_raw: Any, nb_raw: Any, na_raw: Any) -> BookTop | None:
+    """Parse the 4 JSON arrays into best-prices on both sides. Returns
+    None if any side is empty — a one-sided book can't honestly support
+    a fillable trade.
     """
     try:
         import orjson  # local import keeps the engine's hot path lean
@@ -456,8 +531,10 @@ def _mid_from_book(yb_raw: Any, ya_raw: Any) -> float | None:
             return None
         return max(prices) if want_max else min(prices)
 
-    best_bid = best(yb_raw, want_max=True)
-    best_ask = best(ya_raw, want_max=False)
-    if best_bid is None or best_ask is None:
+    yes_bid = best(yb_raw, want_max=True)
+    yes_ask = best(ya_raw, want_max=False)
+    no_bid = best(nb_raw, want_max=True)
+    no_ask = best(na_raw, want_max=False)
+    if any(x is None for x in (yes_bid, yes_ask, no_bid, no_ask)):
         return None
-    return (best_bid + best_ask) / 2.0
+    return BookTop(yes_bid, yes_ask, no_bid, no_ask)  # type: ignore[arg-type]
