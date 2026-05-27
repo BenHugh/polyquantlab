@@ -104,6 +104,29 @@ MAX_FILL_PRICE_FOR_BUY = 0.85
 # time our 4s-polling UI shows them, they're likely gone.
 STABLE_FILL_THRESHOLD = 0.30
 
+# Polymarket "Bitcoin/Ethereum/Solana Up or Down" markets have a fixed
+# nominal duration per event_type. The market opens at one boundary
+# and resolves exactly `duration` seconds later. The STRIKE for the
+# YES/NO outcome is the Binance spot price at OPEN time.
+#
+# CRITICAL CORRECTNESS NOTE:
+#   Polymarket pre-publishes these markets 12-24 hours BEFORE they
+#   open. Our collector starts ingesting orderbook from publish time,
+#   so "first orderbook snapshot's underlying_price" is whatever BTC
+#   was at pre-publish (hours before open) — NOT the actual strike.
+#   Using that as strike makes the model wildly wrong for markets
+#   in their first hour after open.
+#
+#   The fix: derive market_open_ts = resolution_at - duration,
+#   then pull the Binance tick at that timestamp as the strike.
+MARKET_DURATION_S: dict[str, int] = {
+    "5m": 5 * 60,
+    "15m": 15 * 60,
+    "1h": 60 * 60,
+    "4h": 4 * 60 * 60,
+    "daily_up_down": 24 * 60 * 60,
+}
+
 
 @dataclass(frozen=True)
 class ArbOpportunity:
@@ -405,6 +428,7 @@ async def find_live_opportunities(
     for row in rows:
         market_id = row["market_id"]
         ticker = row["ticker"]
+        event_type = row["event_type"]
         if ticker not in underlying_cache or ticker not in sigma_cache:
             continue
         underlying_now, _under_ts = underlying_cache[ticker]
@@ -413,6 +437,16 @@ async def find_live_opportunities(
         tau_s = (resolution_at - now).total_seconds()
         if tau_s <= 0:
             continue
+
+        # Compute true market open ts. Skip pre-open markets — they
+        # have no defined strike yet (Polymarket publishes 12-24h
+        # before the open boundary, but the strike is set AT open).
+        duration_s = MARKET_DURATION_S.get(event_type)
+        if duration_s is None:
+            continue
+        market_open_ts = resolution_at - timedelta(seconds=duration_s)
+        if market_open_ts > now:
+            continue  # market hasn't opened yet — no strike to compute against
 
         # 3. Polymarket snapshot — newest first, and earliest for strike.
         latest_snap_rows = await ch.query(
@@ -433,21 +467,29 @@ async def find_live_opportunities(
         if book is None:
             continue
 
-        # market_open snapshot's underlying_price is the strike.
-        open_rows = await ch.query(
+        # Strike = Binance spot price at the actual market_open_ts.
+        # We grab the first tick at OR AFTER market_open_ts — typically
+        # within ~50ms because BTC ticks at 20+ Hz. Earlier this query
+        # used the first orderbook_snapshot for the market, which for
+        # pre-opened markets was hours before the actual open boundary
+        # and gave a strike that was off by 1-2% (rendering the model
+        # probability wildly wrong).
+        strike_rows = await ch.query(
             """
-            SELECT underlying_price
-              FROM orderbook_snapshots
-             WHERE market_id = {market_id:String}
-               AND underlying_price IS NOT NULL
+            SELECT price
+              FROM underlying_prices
+             WHERE ticker = {ticker:String}
+               AND ts >= {open_ts:DateTime64(3)}
              ORDER BY ts ASC
              LIMIT 1
             """,
-            parameters={"market_id": market_id},
+            parameters={"ticker": ticker, "open_ts": market_open_ts},
         )
-        if not open_rows.result_rows or open_rows.result_rows[0][0] is None:
+        if not strike_rows.result_rows:
+            # No tick at market open — Binance collector may have been
+            # down then. Skip rather than guess.
             continue
-        strike_price = float(open_rows.result_rows[0][0])
+        strike_price = float(strike_rows.result_rows[0][0])
 
         # 4. Model + EV using REAL asks (not mid). Mid-based EV looks
         # great in wide-book Polymarket markets but isn't fillable — see
