@@ -102,6 +102,7 @@ class ArbOpportunity:
     ticker: str          # BTC / ETH / SOL
     event_type: str      # "5m" / "1h" / "daily_up_down" / ...
     question: str        # human-readable market title
+    polymarket_slug: str # the slug used in Polymarket's event URL
 
     # Time slice
     resolution_at: datetime
@@ -374,7 +375,7 @@ async def find_live_opportunities(
     rows = await pg_pool.fetch(
         """
         SELECT m.market_id, e.ticker, e.event_type, e.resolution_at,
-               e.question
+               e.question, e.polymarket_slug
           FROM markets m
           JOIN events e ON e.event_id = m.event_id
          WHERE e.ticker      = ANY($1::text[])
@@ -478,6 +479,7 @@ async def find_live_opportunities(
                 ticker=ticker,
                 event_type=row["event_type"],
                 question=row.get("question") or "",
+                polymarket_slug=row.get("polymarket_slug") or "",
                 resolution_at=resolution_at,
                 seconds_to_resolution=tau_s,
                 underlying_now=underlying_now,

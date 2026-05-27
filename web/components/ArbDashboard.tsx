@@ -25,7 +25,15 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Clock, Filter, Zap } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  Clock,
+  ExternalLink,
+  Filter,
+  Zap,
+} from "lucide-react";
 import CoinIcon from "@/components/CoinIcon";
 import QSelect from "@/components/QSelect";
 
@@ -36,6 +44,7 @@ interface ArbOpportunity {
   ticker: string;
   event_type: string;
   question: string;
+  polymarket_slug: string;
   resolution_at: string;
   seconds_to_resolution: number;
   underlying_now: number;
@@ -413,6 +422,7 @@ function OpportunityTable({
                   Model Net EV
                 </span>
               </th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -463,13 +473,16 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
   const isStable = o.tier === "stable";
   return (
     <tr className={`hover:bg-base-200/40 ${o.tier === "stale" ? "opacity-70" : ""}`}>
-      <td>
+      <td className="max-w-[280px]">
         <div className="flex items-center gap-2">
           <CoinIcon ticker={o.ticker} size={16} />
-          <div className="flex flex-col">
+          <div className="flex flex-col leading-tight min-w-0">
             <span className="font-mono text-xs font-medium">{o.event_type}</span>
-            <span className="font-mono text-[10px] text-base-content/40">
-              {o.market_id.slice(0, 10)}…
+            <span
+              className="text-[11px] text-base-content/70 truncate"
+              title={o.question}
+            >
+              {o.question || `${o.ticker} ${o.event_type}`}
             </span>
           </div>
         </div>
@@ -556,6 +569,20 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
             model · before gas
           </span>
         </div>
+      </td>
+      <td className="text-right">
+        {o.polymarket_slug && (
+          <a
+            href={`https://polymarket.com/event/${o.polymarket_slug}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn-xs btn-ghost gap-1"
+            title="Open this market on Polymarket — execute the trade there"
+          >
+            <ExternalLink size={11} strokeWidth={2} />
+            <span className="hidden md:inline">Polymarket</span>
+          </a>
+        )}
       </td>
     </tr>
   );

@@ -1286,6 +1286,7 @@ async def get_arb_live(
                 "ticker": o.ticker,
                 "event_type": o.event_type,
                 "question": o.question,
+                "polymarket_slug": o.polymarket_slug,
                 "resolution_at": o.resolution_at.isoformat(),
                 "seconds_to_resolution": o.seconds_to_resolution,
                 "underlying_now": o.underlying_now,
