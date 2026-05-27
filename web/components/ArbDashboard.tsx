@@ -56,6 +56,7 @@ interface ArbOpportunity {
   edge_per_share: number;
   est_fee_per_share: number;
   expected_pnl_per_share: number;
+  tier: "stable" | "stale";
 }
 
 interface ArbResponse {
@@ -72,6 +73,7 @@ export default function ArbDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [minEdgePp, setMinEdgePp] = useState(0.04);
+  const [tierFilter, setTierFilter] = useState<"all" | "stable" | "stale">("stable");
   const [paused, setPaused] = useState(false);
   const [lastFetched, setLastFetched] = useState<number>(0);
 
@@ -173,20 +175,39 @@ export default function ArbDashboard() {
       ) : data && data.opportunities.length === 0 ? (
         <EmptyState as_of={data.as_of} min_edge_pp={data.min_edge_pp} />
       ) : data ? (
-        <OpportunityTable rows={data.opportunities} />
+        <OpportunityTable
+          rows={data.opportunities}
+          tierFilter={tierFilter}
+          onTierFilterChange={setTierFilter}
+        />
       ) : null}
 
       {/* Footer disclosure */}
-      <div className="text-xs text-base-content/50 px-3 py-2 border-t border-base-300/40">
-        <strong className="text-base-content/70">Honest disclosure:</strong>{" "}
-        the &quot;Net EV&quot; column shows expected PnL per share after the
-        Polymarket 2026 taker fee but{" "}
-        <em>before</em> Polygon gas (~$0.10-0.30 per trade), execution lag
-        (5-30 s between detection and order placement), and adverse selection
-        (faster bots usually win when the underlying just moved). Realised
-        returns will be lower than the model says — typically 40-60% of model
-        EV. Paper-trade in PolyQuantLab&apos;s Paper Trading before going live
-        with real funds.
+      <div className="text-xs text-base-content/50 px-3 py-2 border-t border-base-300/40 space-y-2">
+        <div>
+          <span className="inline-flex items-center gap-1 font-mono text-success">
+            <span className="h-1.5 w-1.5 rounded-full bg-success inline-block" />
+            STABLE
+          </span>{" "}
+          rows have a fill price between $0.30 and $0.85 — sitting at the
+          Polymarket maker-bot default book zone. These typically persist
+          30+ seconds and are realistically fillable.{" "}
+          <span className="inline-flex items-center gap-1 font-mono text-warning">
+            <span className="h-1.5 w-1.5 rounded-full bg-warning inline-block" />
+            STALE
+          </span>{" "}
+          rows are deep mispricings (fill &lt; $0.30) — model says huge edge,
+          but HFT bots usually arb these in milliseconds. Treat them as
+          educational data, not executable trades.
+        </div>
+        <div>
+          <strong className="text-base-content/70">Net EV caveats:</strong>{" "}
+          the &quot;Net EV&quot; column shows expected PnL per share after
+          the Polymarket 2026 taker fee but <em>before</em> Polygon gas
+          (~$0.10-0.30 per trade), execution lag (5-30 s between detection
+          and order placement), and adverse selection. Realised returns
+          typically 40-60% of model EV.
+        </div>
       </div>
     </div>
   );
@@ -266,7 +287,20 @@ function EmptyState({
   );
 }
 
-function OpportunityTable({ rows }: { rows: ArbOpportunity[] }) {
+function OpportunityTable({
+  rows,
+  tierFilter,
+  onTierFilterChange,
+}: {
+  rows: ArbOpportunity[];
+  tierFilter: "all" | "stable" | "stale";
+  onTierFilterChange: (v: "all" | "stable" | "stale") => void;
+}) {
+  const stableCount = rows.filter((r) => r.tier === "stable").length;
+  const staleCount = rows.filter((r) => r.tier === "stale").length;
+  const filtered = rows.filter(
+    (r) => tierFilter === "all" || r.tier === tierFilter,
+  );
   return (
     <div className="q-panel">
       <header className="q-panel-header">
@@ -275,18 +309,42 @@ function OpportunityTable({ rows }: { rows: ArbOpportunity[] }) {
             <Zap size={16} strokeWidth={2} />
           </span>
           <h3 className="q-section-title truncate">
-            {rows.length} opportunit{rows.length === 1 ? "y" : "ies"}
+            {filtered.length} opportunit{filtered.length === 1 ? "y" : "ies"}
           </h3>
         </div>
-        <span className="q-section-subtitle">
-          sorted by net EV per share
-        </span>
+        <div className="flex items-center gap-1 shrink-0">
+          <TierToggleButton
+            label="Stable"
+            count={stableCount}
+            active={tierFilter === "stable"}
+            onClick={() => onTierFilterChange("stable")}
+            dotClass="bg-success"
+            title="Fill price between 0.30 and 0.85 — sitting at the maker-default book; tends to persist 30+ seconds and is actually fillable."
+          />
+          <TierToggleButton
+            label="Stale"
+            count={staleCount}
+            active={tierFilter === "stale"}
+            onClick={() => onTierFilterChange("stale")}
+            dotClass="bg-warning"
+            title="Deep mispricings (fill < 0.30). HFT bots usually arb these in milliseconds — likely gone by the time you click."
+          />
+          <TierToggleButton
+            label="All"
+            count={rows.length}
+            active={tierFilter === "all"}
+            onClick={() => onTierFilterChange("all")}
+            dotClass="bg-base-content/40"
+            title="Show every opportunity that cleared engine filters."
+          />
+        </div>
       </header>
       <div className="overflow-x-auto">
         <table className="table table-sm">
           <thead>
             <tr>
               <th>Market</th>
+              <th>Tier</th>
               <th className="text-right">τ</th>
               <th className="text-right">Spot vs Strike</th>
               <th className="text-right">Model</th>
@@ -298,7 +356,7 @@ function OpportunityTable({ rows }: { rows: ArbOpportunity[] }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((o) => (
+            {filtered.map((o) => (
               <OpportunityRow key={o.market_id} o={o} />
             ))}
           </tbody>
@@ -308,13 +366,43 @@ function OpportunityTable({ rows }: { rows: ArbOpportunity[] }) {
   );
 }
 
+function TierToggleButton({
+  label,
+  count,
+  active,
+  onClick,
+  dotClass,
+  title,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+  dotClass: string;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`btn btn-xs gap-1.5 ${active ? "btn-primary" : "btn-ghost"}`}
+    >
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass}`} />
+      <span>{label}</span>
+      <span className="font-mono text-[10px] opacity-70">{count}</span>
+    </button>
+  );
+}
+
 function OpportunityRow({ o }: { o: ArbOpportunity }) {
   const deltaPct = ((o.underlying_now - o.strike_price) / o.strike_price) * 100;
   const deltaSign = deltaPct >= 0 ? "+" : "";
   const deltaTone = deltaPct >= 0 ? "text-success" : "text-error";
   const isBuyYes = o.direction === "BUY_YES";
+  const isStable = o.tier === "stable";
   return (
-    <tr className="hover:bg-base-200/40">
+    <tr className={`hover:bg-base-200/40 ${o.tier === "stale" ? "opacity-70" : ""}`}>
       <td>
         <div className="flex items-center gap-2">
           <CoinIcon ticker={o.ticker} size={16} />
@@ -325,6 +413,25 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
             </span>
           </div>
         </div>
+      </td>
+      <td>
+        <span
+          className={`inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wide ${
+            isStable ? "text-success" : "text-warning"
+          }`}
+          title={
+            isStable
+              ? "Fill is at the maker-default book zone — survives 30+ seconds."
+              : "Deep mispricing — likely already arbed by HFT bots."
+          }
+        >
+          <span
+            className={`inline-block h-1.5 w-1.5 rounded-full ${
+              isStable ? "bg-success" : "bg-warning"
+            }`}
+          />
+          {isStable ? "STABLE" : "STALE"}
+        </span>
       </td>
       <td className="text-right tabular-nums font-mono text-xs">
         <span className="inline-flex items-center gap-1">

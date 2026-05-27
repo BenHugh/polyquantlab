@@ -1306,6 +1306,7 @@ async def get_arb_live(
                 "edge_per_share": o.edge_per_share,
                 "est_fee_per_share": o.est_fee_per_share,
                 "expected_pnl_per_share": o.expected_pnl_per_share,
+                "tier": o.tier,
             }
             for o in opps[:limit]
         ],

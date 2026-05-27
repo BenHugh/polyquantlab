@@ -82,6 +82,17 @@ MAX_FILL_SPREAD = 0.06
 # 0.96/0.97 still fails this filter.)
 MAX_FILL_PRICE_FOR_BUY = 0.85
 
+# Confidence tier threshold. Polymarket binary maker bots typically
+# quote 0.49/0.50 or 0.50/0.51 as the "default symmetric" book around
+# 0.50. Opportunities surfacing at fill ≥ 0.30 are sitting at or near
+# this maker-bot zone — they tend to survive 30+ seconds because the
+# bot is genuinely making a market on both sides. Opportunities below
+# fill = 0.30 are deep mispricings (e.g. NO ask at 4¢ when model says
+# 99.9% NO) which represent stale quotes from a bot that hasn't
+# repriced — HFT scanners pick those off in milliseconds, so by the
+# time our 4s-polling UI shows them, they're likely gone.
+STABLE_FILL_THRESHOLD = 0.30
+
 
 @dataclass(frozen=True)
 class ArbOpportunity:
@@ -123,6 +134,12 @@ class ArbOpportunity:
     edge_per_share: float     # win_prob - fill_price; gross EV per $1 spent
     est_fee_per_share: float  # one-sided entry fee
     expected_pnl_per_share: float  # after fee
+
+    # Confidence — "stable" rows sit at the maker-default zone (fill
+    # 0.30-0.85) and tend to persist 30+ seconds; "stale" rows are deep
+    # mispricings (fill < 0.30 or > 0.85) that HFT scanners likely
+    # already arbed in ms. Both classes are surfaced; UI filters/labels.
+    tier: str                 # "stable" | "stale"
 
 
 # ---------------------------------------------------------------------------
@@ -435,14 +452,25 @@ async def find_live_opportunities(
         if edge < min_edge_pp:
             continue
 
-        # Spread + extreme-price filters on the side we'd buy.
+        # Spread filter on the side we'd buy — wider than this and the
+        # "ask" isn't representative of real fillable liquidity.
         fill_spread = (
             book.yes_spread if direction == "BUY_YES" else book.no_spread
         )
         if fill_spread > MAX_FILL_SPREAD:
             continue
+        # Extreme-price filter — keep but as a "drop" not "tier" filter,
+        # because paying 0.95+ even for near-certain payoff yields too
+        # little upside even before lag/gas. Still drop the row.
         if fill_price > MAX_FILL_PRICE_FOR_BUY:
             continue
+
+        # Tier classification — see STABLE_FILL_THRESHOLD comment for
+        # why 0.30 is the cutoff. "stable" rows are near the maker
+        # default book and tend to persist; "stale" rows are deep
+        # mispricings that HFT bots have likely already taken before
+        # our 4s scan picks them up.
+        tier = "stable" if fill_price >= STABLE_FILL_THRESHOLD else "stale"
 
         out.append(
             ArbOpportunity(
@@ -470,6 +498,7 @@ async def find_live_opportunities(
                 edge_per_share=edge,
                 est_fee_per_share=fee,
                 expected_pnl_per_share=net_ev,
+                tier=tier,
             )
         )
 
