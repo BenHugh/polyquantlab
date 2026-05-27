@@ -224,6 +224,14 @@ export default function ArbDashboard() {
           and order placement), and adverse selection. Realised returns
           typically 40-60% of model EV.
         </div>
+        <div>
+          <strong className="text-base-content/70">Execution window:</strong>{" "}
+          rows with <span className="text-warning font-mono">τ &lt; 5 min</span>{" "}
+          are realistically only actionable via API bot — manual
+          click-through-and-sign takes 60-90 seconds + Polygon block
+          confirmation. Engine filters anything under 3 min entirely.
+          For sub-5-min arb you want our API tier + your own bot.
+        </div>
       </div>
     </div>
   );
@@ -507,8 +515,17 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
         </span>
       </td>
       <td className="text-right tabular-nums font-mono text-xs">
-        <span className="inline-flex items-center gap-1">
-          <Clock size={11} className="text-base-content/40" />
+        <span
+          className={`inline-flex items-center gap-1 ${tauTone(o.seconds_to_resolution)}`}
+          title={
+            o.seconds_to_resolution < 300
+              ? "⚠ Less than 5 min — manual execution may not finish before resolution. Use an API bot for these."
+              : o.seconds_to_resolution < 1800
+                ? "Comfortable window — ~5-30 min to execute manually."
+                : "Plenty of time — > 30 min to execute."
+          }
+        >
+          <Clock size={11} />
           {formatTau(o.seconds_to_resolution)}
         </span>
       </td>
@@ -594,4 +611,22 @@ function formatTau(seconds: number): string {
   if (seconds < 86400)
     return `${Math.floor(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
   return `${Math.floor(seconds / 86400)}d`;
+}
+
+/** Colour-code time-to-resolution for execution urgency.
+ *
+ *   < 5 min:  warning (orange) — manual execution may not finish in
+ *             time. By the time the user clicks "View on Polymarket",
+ *             navigates, reviews and signs, the market may have already
+ *             resolved. These rows are really only actionable via API
+ *             bot, not via the UI.
+ *   5-30 min: muted (default) — comfortable manual window
+ *   30 min+:  ample (slightly muted but normal) — plenty of time
+ *
+ * Engine-side MIN_TAU_S = 180 already prevents anything under 3 min
+ * from showing up at all, so the < 5 min range is the warning band.
+ */
+function tauTone(seconds: number): string {
+  if (seconds < 300) return "text-warning";
+  return "text-base-content/60";
 }

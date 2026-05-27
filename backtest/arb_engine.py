@@ -62,10 +62,21 @@ TAKER_FEE_RATE = 0.072
 # after the ~0.018 round-trip fee.
 DEFAULT_MIN_EDGE_PP = 0.04
 
-# Sanity bound on time-to-resolution. Markets <60s out have unreliable
-# books (one-sided liquidity). Markets >24h out have such big σ√τ that
-# the model's probability hangs near 0.5 regardless of price — no signal.
-MIN_TAU_S = 60
+# Sanity bound on time-to-resolution.
+#
+# MIN_TAU_S = 180 (3 min):
+#   Lower bound is execution-feasibility, not data-quality. A user who
+#   sees the row, clicks "View on Polymarket", lands on the market
+#   page, reviews + decides + signs the transaction needs at least
+#   90-150 seconds. Showing rows with τ < 3 min puts the user in a
+#   position where they click and arrive AFTER resolution — terrible
+#   UX. For sub-3-min arb, the user needs an API bot, not the UI.
+#   (Pro tier should expose an API_MIN_TAU_S override for bot users.)
+#
+# MAX_TAU_S = 24 hours:
+#   Above this σ√τ swamps the underlying-vs-strike signal and the
+#   model probability hangs near 0.5 regardless of price — no edge.
+MIN_TAU_S = 180
 MAX_TAU_S = 24 * 3600
 
 # Maximum bid-ask spread on the SIDE WE'D BUY before we drop the row.
