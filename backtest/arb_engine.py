@@ -190,6 +190,16 @@ class ArbOpportunity:
 # above bid-ask bounce timescale.
 VOL_SAMPLE_INTERVAL_SEC = 5
 
+# Window over which to estimate drift (μ in the log-normal walk).
+# Our original zero-drift assumption was the prior bug — the 19-h audit
+# showed model EV +$0.08 / realised $0.00, which the Twitter quant
+# thread (Avellaneda-Stoikov-derived strategies) makes obvious: 5-min
+# BTC has strong autocorrelation (continuation), not mean reversion.
+# Using a 5-min window means we infer "the past 5 minutes' average
+# move per second" and project it forward — this aligns the model's
+# prior with how Polymarket's maker bots clearly price these markets.
+DRIFT_WINDOW_SEC = 300
+
 
 async def realised_vol(
     ch: AsyncClient,
@@ -243,6 +253,70 @@ async def realised_vol(
     return sigma_per_bar * math.sqrt(bars_per_year)
 
 
+async def recent_drift(
+    ch: AsyncClient,
+    ticker: str,
+    now: datetime,
+    window_sec: int = DRIFT_WINDOW_SEC,
+) -> float | None:
+    """Average log-return per second over the past `window_sec`.
+    Returns the drift coefficient μ in the geometric-Brownian-motion
+    walk S_t = S_0 × exp(μ·t + σ·W_t).
+
+    Math:
+      μ ≈ (log(P_now) - log(P_window_ago)) / window_sec
+
+    This is the slope of log-price, NOT the slope of price. For BTC at
+    $75 000 dropping to $74 500 over 5 min, μ ≈ -1.1e-5 per second,
+    which over a 5-min Polymarket window projects another -$497 if
+    the trend continues — a meaningful nudge to the model probability.
+
+    Returns None if the two endpoint ticks aren't both available
+    (collector lag), so the caller can fall back to zero drift.
+    """
+    rows = await ch.query(
+        """
+        WITH endpoints AS (
+            (
+                SELECT 'end' AS pos, price
+                  FROM underlying_prices
+                 WHERE ticker = {ticker:String}
+                   AND ts BETWEEN {end_start:DateTime64(3)}
+                              AND {end_end:DateTime64(3)}
+                 ORDER BY ts DESC
+                 LIMIT 1
+            )
+            UNION ALL
+            (
+                SELECT 'start' AS pos, price
+                  FROM underlying_prices
+                 WHERE ticker = {ticker:String}
+                   AND ts BETWEEN {start_start:DateTime64(3)}
+                              AND {start_end:DateTime64(3)}
+                 ORDER BY ts ASC
+                 LIMIT 1
+            )
+        )
+        SELECT pos, price FROM endpoints
+        """,
+        parameters={
+            "ticker": ticker,
+            "end_start": now - timedelta(seconds=10),
+            "end_end": now,
+            "start_start": now - timedelta(seconds=window_sec + 10),
+            "start_end": now - timedelta(seconds=window_sec - 10),
+        },
+    )
+    by_pos = {r[0]: float(r[1]) for r in rows.result_rows if r[1] is not None}
+    if "start" not in by_pos or "end" not in by_pos:
+        return None
+    p_start = by_pos["start"]
+    p_end = by_pos["end"]
+    if p_start <= 0 or p_end <= 0:
+        return None
+    return (math.log(p_end / p_start)) / window_sec
+
+
 async def latest_underlying(
     ch: AsyncClient, ticker: str, now: datetime
 ) -> tuple[float, datetime] | None:
@@ -281,17 +355,27 @@ def model_yes_probability(
     strike_price: float,
     sigma_annual: float,
     seconds_to_resolution: float,
+    drift_per_sec: float = 0.0,
 ) -> tuple[float, float, float]:
-    """Probability that a log-normal price walk ends ABOVE `strike` in
-    `seconds_to_resolution` from `underlying_now`, given annualised σ.
+    """Probability that a geometric-Brownian-motion price walk ends
+    ABOVE `strike` in `seconds_to_resolution` from `underlying_now`,
+    given annualised σ and per-second drift μ.
 
-    Returns (P_YES, log_diff, sigma_tau) so callers can render the
-    diagnostic columns too.
+    Returns (P_YES, log_diff, sigma_tau).
 
-    Math:
-      r = ln(P_T / P_now) ~ N(0, σ²τ)        (zero-drift assumption)
-      P_YES = P(P_T > strike) = P(r > ln(strike/P_now))
-            = 1 − Φ(ln(strike/P_now) / σ√τ)
+    Math (with drift):
+      r = ln(P_T / P_now) ~ N(μ·τ, σ²·τ)
+      P_YES = P(P_T > strike)
+            = P(r > ln(strike/P_now))
+            = 1 − Φ((ln(strike/P_now) − μτ) / σ√τ)
+
+    drift_per_sec = 0 recovers the original zero-drift formula.
+    Positive drift biases P_YES upward (BTC has been climbing → more
+    likely to keep climbing → YES more likely to win).
+
+    Phase BC.1: this was the prior bug. Audit showed model EV +$0.08
+    realised $0.00 because we were betting on mean reversion when the
+    actual data has positive autocorrelation at 5-min timescale.
     """
     if sigma_annual <= 0 or seconds_to_resolution <= 0:
         # No vol or expired — degenerate to indicator at the current spot.
@@ -301,7 +385,8 @@ def model_yes_probability(
     if sigma_tau <= 0:
         return (1.0 if underlying_now > strike_price else 0.0, 0.0, 0.0)
     log_diff = math.log(strike_price / underlying_now)
-    p_yes = 1.0 - _norm_cdf(log_diff / sigma_tau)
+    drift_offset = drift_per_sec * seconds_to_resolution
+    p_yes = 1.0 - _norm_cdf((log_diff - drift_offset) / sigma_tau)
     # Clamp ε-away from the bounds so downstream EV math (which divides
     # by p × (1−p) in some places) doesn't blow up.
     p_yes = min(0.9995, max(0.0005, p_yes))
@@ -427,6 +512,7 @@ async def find_live_opportunities(
     # 1. Per-ticker pre-fetch.
     underlying_cache: dict[str, tuple[float, datetime]] = {}
     sigma_cache: dict[str, float] = {}
+    drift_cache: dict[str, float] = {}
     for ticker in tickers:
         u = await latest_underlying(ch, ticker, now)
         if u is None:
@@ -435,6 +521,10 @@ async def find_live_opportunities(
         sig = await realised_vol(ch, ticker, now, vol_window_sec)
         if sig is not None:
             sigma_cache[ticker] = sig
+        drift = await recent_drift(ch, ticker, now)
+        # Drift falls back to 0 if endpoints unavailable — same as the
+        # pre-BC.1 zero-drift assumption. Safe degradation.
+        drift_cache[ticker] = drift if drift is not None else 0.0
 
     if not underlying_cache or not sigma_cache:
         return []
@@ -532,8 +622,10 @@ async def find_live_opportunities(
         # (0.1% of Polymarket crypto books per our audit) to never
         # crowd out probability rows. Emit and skip prob check for this
         # market — we don't want one market to fire two rows.
+        drift_per_sec = drift_cache.get(ticker, 0.0)
         p_model, log_diff, sigma_tau = model_yes_probability(
-            underlying_now, strike_price, sigma_annual, tau_s
+            underlying_now, strike_price, sigma_annual, tau_s,
+            drift_per_sec=drift_per_sec,
         )
         logical = logical_arb_ev(book.yes_ask, book.no_ask)
         if logical is not None:
