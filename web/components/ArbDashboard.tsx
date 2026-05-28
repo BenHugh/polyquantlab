@@ -141,13 +141,20 @@ export default function ArbDashboard() {
       <div className="rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm">
         <div className="flex items-start gap-3">
           <AlertTriangle size={16} className="text-warning shrink-0 mt-0.5" />
-          <div className="space-y-1 leading-relaxed">
-            <div className="font-semibold text-base-content">
-              Honest 19-hour audit · 854 resolved opportunities
+          <div className="space-y-1 leading-relaxed flex-1">
+            <div className="font-semibold text-base-content flex items-center gap-2 flex-wrap">
+              Honest audit — every detection logged + reconciled
+              <a
+                href="/dashboard/arb/verification"
+                className="link link-primary text-xs"
+              >
+                See full calibration report →
+              </a>
             </div>
             <div className="text-base-content/70">
-              Average model EV <span className="font-mono text-success">+$0.08/share</span>{" "}
-              · average <strong>realised</strong>{" "}
+              19h pilot: <span className="font-mono">854 resolved opportunities</span>,
+              average model EV <span className="font-mono text-success">+$0.08/share</span>
+              {" "}· average <strong>realised</strong>{" "}
               <span className="font-mono text-base-content">$0.00/share</span>.
               The probability model has no demonstrable edge in production —
               Polymarket maker bots appear well-calibrated for crypto Up/Down

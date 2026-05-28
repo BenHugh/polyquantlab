@@ -1314,6 +1314,115 @@ async def get_arb_live(
     }
 
 
+# ---------------------------------------------------------------------------
+# Arb audit aggregate — verification dashboard data source
+# ---------------------------------------------------------------------------
+#
+# Powers /dashboard/arb/verification. The audit log writes one row per
+# (market_id × first-detection) and the settler fills in
+# realized_pnl_per_share when each market resolves. This endpoint slices
+# the resolved subset into hero stats + per-ticker / per-tier /
+# per-event-type breakdowns so the UI can answer the only question that
+# matters: "does the engine's model EV translate to realised PnL?"
+#
+# Honest by design: we expose realised numbers verbatim. No marketing
+# transformation, no "expected returns" obfuscation. The number is the
+# number. If it shows -$0.02, that's what we paid users to find out.
+
+@app.get("/v1/arb/audit/aggregate")
+async def get_arb_audit_aggregate(
+    request: Request,
+    window: str = Query(
+        default="all",
+        description="Time window: 24h / 7d / 30d / all",
+    ),
+    _: dict = Depends(authed_key),
+) -> dict[str, Any]:
+    pg = request.app.state.pg
+    now = datetime.now(tz=timezone.utc)
+    if window == "24h":
+        since = now - timedelta(days=1)
+    elif window == "7d":
+        since = now - timedelta(days=7)
+    elif window == "30d":
+        since = now - timedelta(days=30)
+    else:
+        since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    # Overall hero numbers. AVG/SUM realised only over resolved rows
+    # (FILTER WHERE resolved_at IS NOT NULL). AVG model_ev over ALL
+    # detections including unresolved — that's what the engine
+    # predicted, regardless of whether we know the outcome yet.
+    overall_row = await pg.fetchrow(
+        """
+        SELECT
+          count(*)                                                      AS total,
+          count(*) FILTER (WHERE resolved_at IS NOT NULL)               AS resolved,
+          count(*) FILTER (WHERE resolved_at IS NULL)                   AS open,
+          count(*) FILTER (WHERE tier = 'logical')                      AS logical_total,
+          count(*) FILTER (WHERE tier = 'logical' AND resolved_at IS NOT NULL) AS logical_resolved,
+          avg(model_ev_per_share)::float                                AS avg_model_ev,
+          avg(realized_pnl_per_share) FILTER (WHERE resolved_at IS NOT NULL)::float AS avg_realized,
+          sum(realized_pnl_per_share) FILTER (WHERE resolved_at IS NOT NULL)::float AS total_realized,
+          min(detected_at)::text                                        AS first_detection,
+          max(detected_at)::text                                        AS last_detection
+        FROM arb_audit_log
+        WHERE detected_at >= $1
+        """,
+        since,
+    )
+
+    async def breakdown(group_col: str) -> list[dict[str, Any]]:
+        rows = await pg.fetch(
+            f"""
+            SELECT
+              {group_col}                                                     AS bucket,
+              count(*)                                                        AS total,
+              count(*) FILTER (WHERE resolved_at IS NOT NULL)                 AS resolved,
+              avg(model_ev_per_share)::float                                  AS avg_model_ev,
+              avg(realized_pnl_per_share) FILTER (WHERE resolved_at IS NOT NULL)::float AS avg_realized,
+              sum(realized_pnl_per_share) FILTER (WHERE resolved_at IS NOT NULL)::float AS total_realized
+            FROM arb_audit_log
+            WHERE detected_at >= $1
+            GROUP BY {group_col}
+            ORDER BY {group_col}
+            """,
+            since,
+        )
+        return [
+            {
+                "bucket": r["bucket"],
+                "total": r["total"],
+                "resolved": r["resolved"],
+                "avg_model_ev": r["avg_model_ev"],
+                "avg_realized": r["avg_realized"],
+                "total_realized": r["total_realized"],
+            }
+            for r in rows
+        ]
+
+    return {
+        "window": window,
+        "since": since.isoformat() if window != "all" else None,
+        "as_of": now.isoformat(),
+        "overall": {
+            "total": overall_row["total"],
+            "resolved": overall_row["resolved"],
+            "open": overall_row["open"],
+            "logical_total": overall_row["logical_total"],
+            "logical_resolved": overall_row["logical_resolved"],
+            "avg_model_ev": overall_row["avg_model_ev"],
+            "avg_realized": overall_row["avg_realized"],
+            "total_realized": overall_row["total_realized"],
+            "first_detection": overall_row["first_detection"],
+            "last_detection": overall_row["last_detection"],
+        },
+        "by_ticker": await breakdown("ticker"),
+        "by_tier": await breakdown("tier"),
+        "by_event_type": await breakdown("event_type"),
+    }
+
+
 class BacktestRequest(BaseModel):
     strategy: dict[str, Any] = Field(
         ...,
