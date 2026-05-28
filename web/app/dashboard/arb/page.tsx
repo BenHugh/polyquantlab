@@ -8,8 +8,8 @@ export default function ArbPage() {
     <div className="max-w-7xl mx-auto">
       <PageHeader
         prefix="/ LIVE"
-        title="Arbitrage Scanner"
-        subtitle="Polymarket binary markets vs Binance spot — real-time mispricing the bots haven't fixed yet. Updated every 4 seconds."
+        title="Mispricing Monitor"
+        subtitle="Polymarket binary markets vs Binance spot, plus logical arbs (yes+no < $1). Research view — not a trading signal. Real-money results disclosed below."
       />
       <ArbDashboard />
     </div>

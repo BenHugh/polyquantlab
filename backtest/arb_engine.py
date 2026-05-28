@@ -320,6 +320,40 @@ def _entry_fee(price: float) -> float:
     return TAKER_FEE_RATE * price * (1.0 - price)
 
 
+def logical_arb_ev(
+    yes_ask: float, no_ask: float
+) -> tuple[float, float, float] | None:
+    """Check for a "buy both" logical arbitrage. When yes_ask + no_ask
+    < $1.00, paying that total guarantees $1.00 back at resolution
+    (one side wins). The payoff is mathematically guaranteed — no
+    model risk, no execution risk beyond filling both legs.
+
+    Returns (gross_edge, total_fee, net_ev) per share-pair, or None
+    if no logical arb (sum >= 1.00).
+
+    Fee model:
+      Polymarket 2026 entry fee is rate × p × (1-p) per share. We pay
+      both yes_ask and no_ask, so total entry fee per share-pair =
+      fee(yes_ask) + fee(no_ask). Exits are at resolution (0 or 1)
+      with zero fee, as elsewhere in the engine.
+
+    "Share-pair" semantics:
+      Buying 1 share of YES + 1 share of NO costs (yes_ask + no_ask).
+      At resolution we receive exactly $1.00 (winning side pays out).
+      So per share-pair: cost = yes_ask + no_ask, revenue = $1.00.
+      Edge = 1 − (yes_ask + no_ask).
+    """
+    total_cost = yes_ask + no_ask
+    if total_cost >= 1.0:
+        return None
+    gross_edge = 1.0 - total_cost
+    yes_fee = TAKER_FEE_RATE * yes_ask * (1.0 - yes_ask)
+    no_fee = TAKER_FEE_RATE * no_ask * (1.0 - no_ask)
+    total_fee = yes_fee + no_fee
+    net_ev = gross_edge - total_fee
+    return gross_edge, total_fee, net_ev
+
+
 def expected_pnl(
     yes_ask: float,
     no_ask: float,
@@ -491,13 +525,57 @@ async def find_live_opportunities(
             continue
         strike_price = float(strike_rows.result_rows[0][0])
 
-        # 4. Model + EV using REAL asks (not mid). Mid-based EV looks
-        # great in wide-book Polymarket markets but isn't fillable — see
-        # polymarket_thin_book_reality.md. Using yes_ask / no_ask gives
-        # us the EV of a trade you could actually execute.
+        # 4a. Logical arb check FIRST. If yes_ask + no_ask < $1, this is
+        # a mathematically guaranteed payoff — no model assumption, no
+        # execution risk beyond filling both legs. These are MUCH more
+        # valuable to surface than probability arbs, and rare enough
+        # (0.1% of Polymarket crypto books per our audit) to never
+        # crowd out probability rows. Emit and skip prob check for this
+        # market — we don't want one market to fire two rows.
         p_model, log_diff, sigma_tau = model_yes_probability(
             underlying_now, strike_price, sigma_annual, tau_s
         )
+        logical = logical_arb_ev(book.yes_ask, book.no_ask)
+        if logical is not None:
+            l_edge, l_fee, l_net = logical
+            if l_net > 0:
+                out.append(
+                    ArbOpportunity(
+                        market_id=market_id,
+                        ticker=ticker,
+                        event_type=row["event_type"],
+                        question=row.get("question") or "",
+                        polymarket_slug=row.get("polymarket_slug") or "",
+                        resolution_at=resolution_at,
+                        seconds_to_resolution=tau_s,
+                        underlying_now=underlying_now,
+                        strike_price=strike_price,
+                        log_diff=log_diff,
+                        sigma_annual=sigma_annual,
+                        sigma_tau=sigma_tau,
+                        market_yes_mid=book.yes_mid,
+                        model_yes_prob=p_model,
+                        mismatch_mid=book.yes_mid - p_model,
+                        yes_bid=book.yes_bid,
+                        yes_ask=book.yes_ask,
+                        no_bid=book.no_bid,
+                        no_ask=book.no_ask,
+                        # For logical arb: "fill_price" = total cost of
+                        # buying one of each, "fill_spread" = N/A (we
+                        # hit both sides simultaneously).
+                        fill_price=book.yes_ask + book.no_ask,
+                        fill_spread=0.0,
+                        direction="BUY_BOTH",
+                        edge_per_share=l_edge,
+                        est_fee_per_share=l_fee,
+                        expected_pnl_per_share=l_net,
+                        tier="logical",
+                    )
+                )
+                continue  # don't double-count this market with prob arb
+
+        # 4b. Model-based probability arb (existing logic, fires when
+        # no logical arb exists in this market).
         direction, fill_price, edge, fee, net_ev = expected_pnl(
             book.yes_ask, book.no_ask, p_model
         )
@@ -519,11 +597,8 @@ async def find_live_opportunities(
         if fill_price > MAX_FILL_PRICE_FOR_BUY:
             continue
 
-        # Tier classification — see STABLE_FILL_THRESHOLD comment for
-        # why 0.30 is the cutoff. "stable" rows are near the maker
-        # default book and tend to persist; "stale" rows are deep
-        # mispricings that HFT bots have likely already taken before
-        # our 4s scan picks them up.
+        # Tier classification for probability arb — see
+        # STABLE_FILL_THRESHOLD comment.
         tier = "stable" if fill_price >= STABLE_FILL_THRESHOLD else "stale"
 
         out.append(
@@ -558,7 +633,9 @@ async def find_live_opportunities(
         )
 
     # 5. Best opportunity first.
-    out.sort(key=lambda o: o.expected_pnl_per_share, reverse=True)
+    # Sort: logical arbs first (risk-free, math-guaranteed), then
+    # probability arbs by expected PnL desc within each tier.
+    out.sort(key=lambda o: (o.tier != "logical", -o.expected_pnl_per_share))
     return out
 
 

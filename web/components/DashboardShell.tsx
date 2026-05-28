@@ -69,7 +69,7 @@ const NAV: NavItem[] = [
   },
   {
     href: "/dashboard/arb",
-    label: "Arb Scanner",
+    label: "Mispricing Monitor",
     icon: <Zap {...ICON_PROPS} />,
   },
   {

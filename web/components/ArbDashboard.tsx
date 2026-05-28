@@ -61,11 +61,11 @@ interface ArbOpportunity {
   no_ask: number;
   fill_price: number;
   fill_spread: number;
-  direction: "BUY_YES" | "BUY_NO";
+  direction: "BUY_YES" | "BUY_NO" | "BUY_BOTH";
   edge_per_share: number;
   est_fee_per_share: number;
   expected_pnl_per_share: number;
-  tier: "stable" | "stale";
+  tier: "stable" | "stale" | "logical";
 }
 
 interface ArbResponse {
@@ -126,6 +126,39 @@ export default function ArbDashboard() {
 
   return (
     <div className="space-y-4">
+      {/* Honest audit banner — sets expectations BEFORE the data table.
+       *
+       * We ran our own engine for 19h over 854 resolved opportunities.
+       * Average model EV was +$0.08/share, average realised PnL was
+       * $0.00. The model has no demonstrable edge in current
+       * production data — probably because Polymarket maker bots are
+       * already well-calibrated for crypto Up/Down books.
+       *
+       * Surfacing this prominently keeps us honest: this page is for
+       * research, not a trading signal. (Logical arbs are different
+       * — they're mathematically guaranteed when they appear.)
+       */}
+      <div className="rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm">
+        <div className="flex items-start gap-3">
+          <AlertTriangle size={16} className="text-warning shrink-0 mt-0.5" />
+          <div className="space-y-1 leading-relaxed">
+            <div className="font-semibold text-base-content">
+              Honest 19-hour audit · 854 resolved opportunities
+            </div>
+            <div className="text-base-content/70">
+              Average model EV <span className="font-mono text-success">+$0.08/share</span>{" "}
+              · average <strong>realised</strong>{" "}
+              <span className="font-mono text-base-content">$0.00/share</span>.
+              The probability model has no demonstrable edge in production —
+              Polymarket maker bots appear well-calibrated for crypto Up/Down
+              books. <strong>This page is research, not a trading signal.</strong>{" "}
+              Logical arbs (<span className="text-warning font-mono">yes + no &lt; $1</span>) are
+              the exception — they&apos;re mathematically guaranteed when surfaced.
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Controls */}
       <section className="q-panel">
         <header className="q-panel-header">
@@ -331,8 +364,14 @@ function OpportunityTable({
       : rows.filter((r) => r.ticker === tickerFilter);
   const stableCount = tickerFiltered.filter((r) => r.tier === "stable").length;
   const staleCount = tickerFiltered.filter((r) => r.tier === "stale").length;
+  const logicalCount = tickerFiltered.filter((r) => r.tier === "logical").length;
+  // Logical arbs are math-guaranteed — never hide them with the tier
+  // filter. Anything else (stable/stale) respects the selection.
   const filtered = tickerFiltered.filter(
-    (r) => tierFilter === "all" || r.tier === tierFilter,
+    (r) =>
+      r.tier === "logical" ||
+      tierFilter === "all" ||
+      r.tier === tierFilter,
   );
 
   // Per-ticker counts for the ticker filter pills — count from ALL rows
@@ -354,6 +393,14 @@ function OpportunityTable({
           <h3 className="q-section-title truncate">
             {filtered.length} opportunit{filtered.length === 1 ? "y" : "ies"}
           </h3>
+          {logicalCount > 0 && (
+            <span
+              className="badge badge-sm badge-warning gap-1 font-mono"
+              title="Logical arbs are surfaced regardless of any filters — they're risk-free."
+            >
+              🛡 {logicalCount} LOGICAL
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 shrink-0 flex-wrap">
           {/* Ticker filter — pills, default "all" so user sees full coverage */}
@@ -478,9 +525,19 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
   const deltaSign = deltaPct >= 0 ? "+" : "";
   const deltaTone = deltaPct >= 0 ? "text-success" : "text-error";
   const isBuyYes = o.direction === "BUY_YES";
+  const isBuyBoth = o.direction === "BUY_BOTH";
   const isStable = o.tier === "stable";
+  const isLogical = o.tier === "logical";
+  // Logical arbs render with a distinct gold-tinted row so they stand
+  // out from probability arbs visually (they're math-guaranteed, the
+  // others are model-dependent — different risk profile entirely).
+  const rowBg = isLogical
+    ? "bg-warning/5 hover:bg-warning/10"
+    : o.tier === "stale"
+      ? "opacity-70 hover:bg-base-200/40"
+      : "hover:bg-base-200/40";
   return (
-    <tr className={`hover:bg-base-200/40 ${o.tier === "stale" ? "opacity-70" : ""}`}>
+    <tr className={rowBg}>
       <td className="max-w-[280px]">
         <div className="flex items-center gap-2">
           <CoinIcon ticker={o.ticker} size={16} />
@@ -496,23 +553,32 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
         </div>
       </td>
       <td>
-        <span
-          className={`inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wide ${
-            isStable ? "text-success" : "text-warning"
-          }`}
-          title={
-            isStable
-              ? "Fill is at the maker-default book zone — survives 30+ seconds."
-              : "Deep mispricing — likely already arbed by HFT bots."
-          }
-        >
+        {isLogical ? (
           <span
-            className={`inline-block h-1.5 w-1.5 rounded-full ${
-              isStable ? "bg-success" : "bg-warning"
+            className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wide text-warning font-semibold"
+            title="Logical arbitrage: yes_ask + no_ask < $1.00. Buy both sides for a mathematically guaranteed payoff at resolution — no model risk."
+          >
+            🛡 LOGICAL
+          </span>
+        ) : (
+          <span
+            className={`inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wide ${
+              isStable ? "text-success" : "text-warning"
             }`}
-          />
-          {isStable ? "STABLE" : "STALE"}
-        </span>
+            title={
+              isStable
+                ? "Fill is at the maker-default book zone — survives 30+ seconds."
+                : "Deep mispricing — likely already arbed by HFT bots."
+            }
+          >
+            <span
+              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                isStable ? "bg-success" : "bg-warning"
+              }`}
+            />
+            {isStable ? "STABLE" : "STALE"}
+          </span>
+        )}
       </td>
       <td className="text-right tabular-nums font-mono text-xs">
         <span
@@ -555,18 +621,24 @@ function OpportunityRow({ o }: { o: ArbOpportunity }) {
         </div>
       </td>
       <td>
-        <span
-          className={`badge badge-sm gap-1 ${
-            isBuyYes ? "badge-success" : "badge-error"
-          }`}
-        >
-          {isBuyYes ? (
-            <ArrowUpRight size={11} strokeWidth={2.5} />
-          ) : (
-            <ArrowDownRight size={11} strokeWidth={2.5} />
-          )}
-          {isBuyYes ? "BUY YES" : "BUY NO"}
-        </span>
+        {isBuyBoth ? (
+          <span className="badge badge-sm gap-1 badge-warning">
+            🛡 BUY BOTH
+          </span>
+        ) : (
+          <span
+            className={`badge badge-sm gap-1 ${
+              isBuyYes ? "badge-success" : "badge-error"
+            }`}
+          >
+            {isBuyYes ? (
+              <ArrowUpRight size={11} strokeWidth={2.5} />
+            ) : (
+              <ArrowDownRight size={11} strokeWidth={2.5} />
+            )}
+            {isBuyYes ? "BUY YES" : "BUY NO"}
+          </span>
+        )}
       </td>
       <td className="text-right tabular-nums font-mono text-xs">
         ${o.fill_price.toFixed(3)}
