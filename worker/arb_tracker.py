@@ -34,8 +34,16 @@ Critical math note (realized PnL):
     payoff = 1 if NO wins, 0 if YES wins
     realised PnL = payoff − cost − fee
   For BUY_YES at fill price p: same structure but payoff is 1 iff YES wins.
+  For BUY_BOTH (logical arb): we hold 1 YES + 1 NO share. fill_price is
+    the COMBINED cost (yes_ask + no_ask); fee is fee(yes_ask)+fee(no_ask).
+    Exactly one leg pays $1.00 at resolution regardless of outcome, so
+    payoff is a deterministic $1.00 — realised PnL == model EV (no model
+    risk; that's the definition of a logical arb).
   Exit at resolution incurs no extra fee (p × (1−p) = 0 at p ∈ {0, 1}).
-  This mirrors backtest/arb_engine.py:_entry_fee and expected_pnl.
+  We reuse the stored est_fee_per_share rather than recomputing from
+  fill_price, because the combined fill_price of a logical arb would
+  break the single-leg fee formula. This mirrors
+  backtest/arb_engine.py:_entry_fee / logical_arb_ev / expected_pnl.
 """
 
 from __future__ import annotations
@@ -79,16 +87,32 @@ def _compute_realized_pnl(
     direction: str,
     fill_price: float,
     resolved_outcome: str,
+    est_fee: float,
 ) -> float:
     """Per-share realised PnL after the entry fee. See module docstring
-    for the math. Outcome is 'yes_won' or 'no_won'."""
+    for the math. Outcome is 'yes_won' or 'no_won'.
+
+    `est_fee` is the entry fee computed at DETECTION time (stored in
+    est_fee_per_share). We reuse it rather than recomputing from
+    fill_price because for a logical arb (BUY_BOTH) the stored
+    fill_price is the COMBINED cost (yes_ask + no_ask), so the
+    single-leg fee formula rate·p·(1−p) would be wrong. For the
+    directional case est_fee == rate·fill·(1−fill), so reusing it is
+    identical to the old behaviour — no regression.
+    """
+    if direction == "BUY_BOTH":
+        # Logical arb: we hold BOTH the YES and NO share. Exactly one
+        # pays $1.00 at resolution regardless of which way the market
+        # goes, so the payoff is a deterministic $1.00. fill_price is
+        # the combined entry cost. Realised PnL == model EV here (no
+        # model risk — that's the whole point of a logical arb).
+        return 1.0 - fill_price - est_fee
     if direction == "BUY_NO":
         won = resolved_outcome == "no_won"
     else:  # BUY_YES
         won = resolved_outcome == "yes_won"
     payoff = 1.0 if won else 0.0
-    fee = TAKER_FEE_RATE * fill_price * (1.0 - fill_price)
-    return payoff - fill_price - fee
+    return payoff - fill_price - est_fee
 
 
 async def _insert_detections(
@@ -156,8 +180,8 @@ async def _settle_resolved(pool: asyncpg.Pool) -> int:
     now = datetime.now(tz=timezone.utc)
     rows = await pool.fetch(
         """
-        SELECT a.id, a.direction, a.fill_price, e.resolution_outcome,
-               e.resolved_at
+        SELECT a.id, a.direction, a.fill_price, a.est_fee_per_share,
+               e.resolution_outcome, e.resolved_at
           FROM arb_audit_log a
           JOIN markets m ON m.market_id = a.market_id
           JOIN events  e ON e.event_id  = m.event_id
@@ -193,6 +217,7 @@ async def _settle_resolved(pool: asyncpg.Pool) -> int:
                 continue
             realized = _compute_realized_pnl(
                 r["direction"], float(r["fill_price"]), resolved_outcome,
+                float(r["est_fee_per_share"]),
             )
             await conn.execute(
                 """
