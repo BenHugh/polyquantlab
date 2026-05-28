@@ -1,6 +1,6 @@
 """Collector entry point — PolyQuantLab (Polymarket crypto data layer).
 
-Five concurrent loops:
+Six concurrent loops:
   1. Discovery:         poll Gamma every 5 min for active crypto Up/Down events
   2. Polymarket WS:     stream CLOB orderbook + trades (sub-second + price_change)
   3. Binance spot WS:   tick-by-tick prices for the UnderlyingPriceCache +
@@ -9,6 +9,9 @@ Five concurrent loops:
                          (order-flow data, written to binance_spot_trades)
   5. Bybit linear WS:   V5 markPrice for BTC/ETH/SOL — replaces geo-blocked
                          Binance futures
+  6. Chainlink oracle:  Polygon RPC poll every 10s for the Chainlink USD
+                         aggregators Polymarket references for crypto Up/Down
+                         resolution (Phase BC.2 — parity with PolyBackTest)
 
   python -m collector.main
 """
@@ -21,6 +24,7 @@ import signal
 from collector.binance_trades_ws import BinanceTradesWS
 from collector.binance_ws import BinanceWS
 from collector.bybit_ws import BybitWS
+from collector.chainlink_oracle import ChainlinkOracle
 from collector.config import get_settings
 from collector.db import make_clickhouse, make_postgres_pool
 from collector.discovery import run_discovery_forever
@@ -49,6 +53,7 @@ async def main() -> None:
     binance = BinanceWS(settings, ch, price_cache)
     binance_trades = BinanceTradesWS(settings, ch)
     bybit = BybitWS(settings, ch)
+    chainlink = ChainlinkOracle(settings, ch)
     poly = PolymarketWS(settings, pool, ch, price_cache)
 
     stop_event = asyncio.Event()
@@ -76,6 +81,7 @@ async def main() -> None:
         asyncio.create_task(binance.run(), name="binance_ws"),
         asyncio.create_task(binance_trades.run(), name="binance_trades_ws"),
         asyncio.create_task(bybit.run(), name="bybit_ws"),
+        asyncio.create_task(chainlink.run(), name="chainlink_oracle"),
         asyncio.create_task(poly.run(), name="polymarket_ws"),
     ]
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
