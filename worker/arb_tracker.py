@@ -60,6 +60,7 @@ from clickhouse_connect.driver.asyncclient import AsyncClient
 from backtest.arb_engine import (
     TAKER_FEE_RATE,
     ArbOpportunity,
+    find_endgame_opportunities,
     find_live_opportunities,
 )
 from collector.config import get_settings
@@ -118,11 +119,13 @@ def _compute_realized_pnl(
 async def _insert_detections(
     pool: asyncpg.Pool, opps: list[ArbOpportunity]
 ) -> int:
-    """Bulk insert detections. ON CONFLICT DO NOTHING means the first
-    detection per market wins — subsequent scans of the same market
-    are silently ignored. Returns the number of new rows actually
-    inserted (asyncpg's executemany doesn't return per-row results so
-    we use a single INSERT ... ON CONFLICT ... RETURNING)."""
+    """Bulk insert detections. ON CONFLICT (market_id, tier) DO NOTHING
+    means the first detection per (market, tier) wins — subsequent scans
+    of the same market+tier are silently ignored, but a market CAN hold
+    one row per tier (e.g. a probability-arb 'stable' row early in its
+    life and an 'endgame' row in its final seconds). Returns the count of
+    new rows actually inserted (asyncpg's executemany doesn't return
+    per-row results so we use single INSERT ... ON CONFLICT ... RETURNING)."""
     if not opps:
         return 0
     rows = [
@@ -158,7 +161,7 @@ async def _insert_detections(
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     $13, $14, $15, $16
                 )
-                ON CONFLICT (market_id) DO NOTHING
+                ON CONFLICT (market_id, tier) DO NOTHING
                 RETURNING id
                 """,
                 *r,
@@ -258,10 +261,18 @@ async def detection_loop(
         try:
             opps = await find_live_opportunities(ch, pool)
             inserted = await _insert_detections(pool, opps)
+            # Endgame sniper (Phase BD) — separate scan over the final
+            # 25-120s of short markets. Distinct tau window + tier, so it
+            # never collides with the probability-arb rows above. Audited
+            # the same way; the settler handles BUY_YES/BUY_NO realised PnL.
+            eg_opps = await find_endgame_opportunities(ch, pool)
+            eg_inserted = await _insert_detections(pool, eg_opps)
             log.info(
                 "arb_detector_cycle",
                 seen=len(opps),
                 inserted=inserted,
+                endgame_seen=len(eg_opps),
+                endgame_inserted=eg_inserted,
                 interval_s=DETECT_INTERVAL_S,
             )
         except Exception as exc:  # noqa: BLE001 — keep the worker alive

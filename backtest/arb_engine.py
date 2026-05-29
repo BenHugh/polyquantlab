@@ -79,6 +79,39 @@ DEFAULT_MIN_EDGE_PP = 0.04
 MIN_TAU_S = 180
 MAX_TAU_S = 24 * 3600
 
+# ---------------------------------------------------------------------------
+# Endgame sniper (Phase BD)
+# ---------------------------------------------------------------------------
+# A separate, narrower detector for the "book-lag" edge that lives in the
+# final seconds of a short market — the strategy a verified live trader
+# was running (100% win rate, +$277 over 115 trades). When the underlying
+# is many σ from the strike with seconds left, the outcome is essentially
+# deterministic, yet Polymarket's thin book is slow to mark the near-
+# certain side to ~$1.00. Buying that side below its true probability is
+# a real, measurable edge.
+#
+# A 250-market replay confirmed BOTH the edge and its dangerous opposite:
+#   tau 0-120s, |dist| 50-150  → near side wins 100%, +$0.028/share
+#   tau   <120s, |dist| <50    → near side wins ~80%, −$0.06 to −$0.10
+# So the gate is NOT "near the end" alone — it's "near the end AND many σ
+# away on BOTH oracles". The < 50 corner is a trap the σ gate excludes.
+#
+# This is research/audit only — capturing it live needs sub-second FOK
+# execution, not a 30s detector. We measure the edge honestly; we don't
+# claim a user can trade it from the UI.
+ENDGAME_TAU_MIN_S = 25        # below this: resolution race + zero exec headroom
+ENDGAME_TAU_MAX_S = 120       # edge concentrates in the final 2 min
+ENDGAME_EVENT_TYPES = ("5m", "15m")  # short markets only
+# Near-certainty gate: model p_yes must be this extreme (>= for YES,
+# <= 1−this for NO). 0.985 ≈ underlying > ~2.2σ past the strike — past
+# the < 1σ trap the replay flagged.
+ENDGAME_CERTAINTY = 0.985
+# The near-certain side must still be buyable below this — paying 0.99+
+# leaves < 1¢ of margin which fees + slippage erase. We DON'T apply the
+# tight MAX_FILL_SPREAD here: thin endgame books are exactly where the
+# lag edge lives, so a wide spread is expected, not a red flag.
+ENDGAME_MAX_ASK = 0.985
+
 # Maximum bid-ask spread on the SIDE WE'D BUY before we drop the row.
 # Wider than this and the "ask" we'd pay isn't representative of real
 # fillable price — the trade looks great on paper but liquidity is fake
@@ -337,6 +370,36 @@ async def latest_underlying(
         return None
     price, ts = rows.result_rows[0]
     return float(price), ts
+
+
+async def latest_chainlink(
+    ch: AsyncClient, ticker: str, now: datetime, max_staleness_s: int = 120
+) -> float | None:
+    """Most recent Chainlink oracle price for `ticker`. Returns None if
+    no tick within `max_staleness_s`. Chainlink posts ~every 30s on a
+    deviation/heartbeat basis, so we allow a looser staleness window than
+    the Binance feed (which ticks 20+ Hz). Used by the endgame detector
+    to require both oracles agree the underlying is far from the strike —
+    mirrors the dual `Bn dist` / `CL dist` checklist gates a live trader
+    runs before firing."""
+    rows = await ch.query(
+        """
+        SELECT price
+          FROM underlying_prices
+         WHERE ticker = {ticker:String}
+           AND source = 'chainlink'
+           AND ts > {since:DateTime64(3)}
+         ORDER BY ts DESC
+         LIMIT 1
+        """,
+        parameters={
+            "ticker": ticker,
+            "since": now - timedelta(seconds=max_staleness_s),
+        },
+    )
+    if not rows.result_rows:
+        return None
+    return float(rows.result_rows[0][0])
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +791,204 @@ async def find_live_opportunities(
     # Sort: logical arbs first (risk-free, math-guaranteed), then
     # probability arbs by expected PnL desc within each tier.
     out.sort(key=lambda o: (o.tier != "logical", -o.expected_pnl_per_share))
+    return out
+
+
+async def find_endgame_opportunities(
+    ch: AsyncClient,
+    pg_pool: Any,
+    *,
+    tickers: tuple[str, ...] = ("BTC", "ETH", "SOL"),
+    now: datetime | None = None,
+) -> list[ArbOpportunity]:
+    """Endgame book-lag detector — see the ENDGAME_* tunables block.
+
+    Scans only short markets in their final ENDGAME_TAU_MIN..MAX seconds.
+    Emits a BUY_YES / BUY_NO row (tier='endgame') when ALL hold:
+      1. model p_yes is near-certain (>= ENDGAME_CERTAINTY, or symmetric
+         for NO) — i.e. the underlying is ~2.2σ+ past the strike, past
+         the < 1σ trap the 250-market replay flagged as a loser
+      2. Binance AND Chainlink BOTH sit on the near-certain side of the
+         strike (dual-oracle agreement — mirrors the live trader's two
+         separate `Bn dist` / `CL dist` checklist gates; uses BC.2)
+      3. the near-certain side is buyable below ENDGAME_MAX_ASK (margin)
+      4. the bet is +EV after fees on the model's own probability
+
+    Deliberately separate from find_live_opportunities so the existing
+    probability-arb scan (tau >= MIN_TAU_S = 180s) is untouched. No drift
+    term here on purpose: near-certainty must come from raw distance, not
+    from extrapolating momentum into the final seconds (a buzzer-beater
+    reversal is exactly where momentum is least reliable).
+    """
+    if now is None:
+        now = datetime.now(tz=timezone.utc)
+
+    # 1. Per-ticker pre-fetch: Binance spot, σ, Chainlink.
+    underlying_cache: dict[str, float] = {}
+    sigma_cache: dict[str, float] = {}
+    chainlink_cache: dict[str, float] = {}
+    for ticker in tickers:
+        u = await latest_underlying(ch, ticker, now)
+        if u is not None:
+            underlying_cache[ticker] = u[0]
+        sig = await realised_vol(ch, ticker, now, DEFAULT_VOL_WINDOW_SEC)
+        if sig is not None:
+            sigma_cache[ticker] = sig
+        cl = await latest_chainlink(ch, ticker, now)
+        if cl is not None:
+            chainlink_cache[ticker] = cl
+
+    if not underlying_cache or not sigma_cache:
+        return []
+
+    # 2. Markets in their final ENDGAME window only.
+    rows = await pg_pool.fetch(
+        """
+        SELECT m.market_id, e.ticker, e.event_type, e.resolution_at,
+               e.question, e.polymarket_slug
+          FROM markets m
+          JOIN events e ON e.event_id = m.event_id
+         WHERE e.ticker      = ANY($1::text[])
+           AND e.event_type  = ANY($2::text[])
+           AND e.resolved_at IS NULL
+           AND e.resolution_at > $3
+           AND e.resolution_at < $4
+        """,
+        list(tickers),
+        list(ENDGAME_EVENT_TYPES),
+        now + timedelta(seconds=ENDGAME_TAU_MIN_S),
+        now + timedelta(seconds=ENDGAME_TAU_MAX_S),
+    )
+
+    out: list[ArbOpportunity] = []
+    for row in rows:
+        market_id = row["market_id"]
+        ticker = row["ticker"]
+        event_type = row["event_type"]
+        if ticker not in underlying_cache or ticker not in sigma_cache:
+            continue
+        # Dual-oracle requires a fresh Chainlink price too — no Chainlink,
+        # no endgame row (we won't fire on a single oracle).
+        if ticker not in chainlink_cache:
+            continue
+        underlying_now = underlying_cache[ticker]
+        chainlink_now = chainlink_cache[ticker]
+        sigma_annual = sigma_cache[ticker]
+        resolution_at: datetime = row["resolution_at"]
+        tau_s = (resolution_at - now).total_seconds()
+        if tau_s <= 0:
+            continue
+
+        duration_s = MARKET_DURATION_S.get(event_type)
+        if duration_s is None:
+            continue
+        market_open_ts = resolution_at - timedelta(seconds=duration_s)
+        if market_open_ts > now:
+            continue
+
+        # Latest Polymarket book.
+        snap = await ch.query(
+            """
+            SELECT yes_bids, yes_asks, no_bids, no_asks
+              FROM orderbook_snapshots
+             WHERE market_id = {market_id:String}
+             ORDER BY ts DESC
+             LIMIT 1
+            """,
+            parameters={"market_id": market_id},
+        )
+        if not snap.result_rows:
+            continue
+        yb, ya, nb, na = snap.result_rows[0]
+        book = _book_top(yb, ya, nb, na)
+        if book is None:
+            continue
+
+        # Strike = Binance spot at market open.
+        sr = await ch.query(
+            """
+            SELECT price FROM underlying_prices
+             WHERE ticker = {ticker:String} AND source = 'binance_spot'
+               AND ts >= {open_ts:DateTime64(3)}
+             ORDER BY ts ASC LIMIT 1
+            """,
+            parameters={"ticker": ticker, "open_ts": market_open_ts},
+        )
+        if not sr.result_rows:
+            continue
+        strike_price = float(sr.result_rows[0][0])
+
+        # Model near-certainty (no drift — see docstring).
+        p_model, log_diff, sigma_tau = model_yes_probability(
+            underlying_now, strike_price, sigma_annual, tau_s
+        )
+        if p_model >= ENDGAME_CERTAINTY:
+            near = "YES"
+        elif p_model <= (1.0 - ENDGAME_CERTAINTY):
+            near = "NO"
+        else:
+            continue  # not near-certain — the < ~2σ trap, skip
+
+        # Dual-oracle agreement: BOTH Binance and Chainlink on the near
+        # side of the strike. YES near-certain ⇒ both above; NO ⇒ both below.
+        bn_above = underlying_now > strike_price
+        cl_above = chainlink_now > strike_price
+        if near == "YES" and not (bn_above and cl_above):
+            continue
+        if near == "NO" and not ((not bn_above) and (not cl_above)):
+            continue
+
+        # Buy the near-certain side at its ask; require real margin + EV.
+        if near == "YES":
+            fill_price = book.yes_ask
+            fill_spread = book.yes_spread
+            edge = p_model - fill_price            # q − price
+            direction = "BUY_YES"
+        else:
+            fill_price = book.no_ask
+            fill_spread = book.no_spread
+            edge = (1.0 - p_model) - fill_price    # (1−q) − price
+            direction = "BUY_NO"
+
+        if fill_price <= 0 or fill_price > ENDGAME_MAX_ASK:
+            continue
+        fee = _entry_fee(fill_price)
+        net_ev = edge - fee
+        if net_ev <= 0:
+            continue
+
+        out.append(
+            ArbOpportunity(
+                market_id=market_id,
+                ticker=ticker,
+                event_type=event_type,
+                question=row.get("question") or "",
+                polymarket_slug=row.get("polymarket_slug") or "",
+                resolution_at=resolution_at,
+                seconds_to_resolution=tau_s,
+                underlying_now=underlying_now,
+                strike_price=strike_price,
+                log_diff=log_diff,
+                sigma_annual=sigma_annual,
+                sigma_tau=sigma_tau,
+                market_yes_mid=book.yes_mid,
+                model_yes_prob=p_model,
+                mismatch_mid=book.yes_mid - p_model,
+                yes_bid=book.yes_bid,
+                yes_ask=book.yes_ask,
+                no_bid=book.no_bid,
+                no_ask=book.no_ask,
+                fill_price=fill_price,
+                fill_spread=fill_spread,
+                direction=direction,
+                edge_per_share=edge,
+                est_fee_per_share=fee,
+                expected_pnl_per_share=net_ev,
+                tier="endgame",
+            )
+        )
+
+    out.sort(key=lambda o: -o.expected_pnl_per_share)
     return out
 
 
