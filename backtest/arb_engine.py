@@ -103,9 +103,15 @@ ENDGAME_TAU_MIN_S = 25        # below this: resolution race + zero exec headroom
 ENDGAME_TAU_MAX_S = 120       # edge concentrates in the final 2 min
 ENDGAME_EVENT_TYPES = ("5m", "15m")  # short markets only
 # Near-certainty gate: model p_yes must be this extreme (>= for YES,
-# <= 1−this for NO). 0.985 ≈ underlying > ~2.2σ past the strike — past
-# the < 1σ trap the replay flagged.
-ENDGAME_CERTAINTY = 0.985
+# <= 1−this for NO). A 24h/600-market threshold sweep showed:
+#   p>=0.90 → 93.8% win, realized −$0.036 (the < ~1.3σ trap still loses)
+#   p>=0.93 → 100% win,  realized +$0.027
+#   p>=0.95 → 100% win,  realized +$0.019
+# 0.95 sits safely inside the proven 100%-win region with margin above
+# the 0.90 loss zone. NOTE this also exposed that our σ-model is MORE
+# conservative than the Polymarket book in the endgame — see the EV
+# comment in find_endgame_opportunities.
+ENDGAME_CERTAINTY = 0.95
 # The near-certain side must still be buyable below this — paying 0.99+
 # leaves < 1¢ of margin which fees + slippage erase. We DON'T apply the
 # tight MAX_FILL_SPREAD here: thin endgame books are exactly where the
@@ -938,24 +944,36 @@ async def find_endgame_opportunities(
         if near == "NO" and not ((not bn_above) and (not cl_above)):
             continue
 
-        # Buy the near-certain side at its ask; require real margin + EV.
+        # Buy the near-certain side at its ask. We deliberately do NOT
+        # gate on the σ-model's EV here. A 24h/600-market sweep showed
+        # the model is systematically MORE conservative than the
+        # Polymarket book in the endgame (model p ≈ 0.95 while the book
+        # already marks the near side at ~0.97), so a model-EV gate
+        # rejects every real setup — model says "overpriced," book
+        # disagrees, and empirically the near side wins ~100% past the
+        # 0.95 certainty line. The trader's thesis is the simple one:
+        # at this distance the outcome is physically locked, so the near
+        # side pays ~$1.00. We score it on that hold-to-resolution basis
+        # and let the audit's realized-vs-expected reveal whether the
+        # thesis holds. model_yes_prob is still recorded as the (more
+        # conservative) diagnostic so the calibration view can show the
+        # gap between our model and reality.
         if near == "YES":
             fill_price = book.yes_ask
             fill_spread = book.yes_spread
-            edge = p_model - fill_price            # q − price
             direction = "BUY_YES"
         else:
             fill_price = book.no_ask
             fill_spread = book.no_spread
-            edge = (1.0 - p_model) - fill_price    # (1−q) − price
             direction = "BUY_NO"
 
         if fill_price <= 0 or fill_price > ENDGAME_MAX_ASK:
             continue
         fee = _entry_fee(fill_price)
+        edge = 1.0 - fill_price        # gross payoff if the near side holds
         net_ev = edge - fee
-        if net_ev <= 0:
-            continue
+        if net_ev <= 0:                # auto-satisfied by the ENDGAME_MAX_ASK
+            continue                   # ceiling; keep as a safety net
 
         out.append(
             ArbOpportunity(
